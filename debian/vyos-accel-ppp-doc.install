@@ -1,0 +1,3 @@
+usr/share/man/man1/accel-cmd.1
+usr/share/man/man5/accel-ppp.conf.5
+etc/accel-ppp.conf.dist	/usr/share/doc/accel-ppp/

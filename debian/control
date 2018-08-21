@@ -1,15 +1,19 @@
 Source: vyos-accel-ppp
-Section: unknown
+Section: net 
 Priority: optional
-Maintainer: root <vyosdev@derith.de>
+Maintainer: hagbard <vyosdev@derith.de>
 Build-Depends: cdbs, debhelper (>= 9), cmake
 Standards-Version: 3.9.5
-Homepage: <insert the upstream URL, if relevant>
-#Vcs-Git: git://anonscm.debian.org/collab-maint/vyos-accel-ppp.git
-#Vcs-Browser: http://anonscm.debian.org/?p=collab-maint/vyos-accel-ppp.git;a=summary
+Homepage: https://accel-ppp.org
+Vcs-Git: git://git.code.sf.net/p/accel-ppp/code accel-ppp.git
 
 Package: vyos-accel-ppp
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: <insert up to 60 chars description>
- <insert long description, indented with spaces>
+Description: accel-ppp is a high performance VPN server application for linux. 
+ Its goal is aggregation of various popular VPN techniques to a single application.
+
+
+Package: vyos-accel-ppp-doc
+Architecture: all
+Description: manpages and documentation for accel-ppp.

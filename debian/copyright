@@ -1,14 +1,13 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: vyos-accel-ppp
-Source: <url://example.com>
+Source: https://accel-ppp.org
 
 Files: *
-Copyright: <years> <put author's name and email here>
-           <years> <likewise for another author>
+Copyright: contact@accel-ppp.org 
 License: GPL-2.0+
 
 Files: debian/*
-Copyright: 2018 root <vyosdev@derith.de>
+Copyright: 2018 hagbard <vyosdev@derith.de>
 License: GPL-2.0+
 
 License: GPL-2.0+
@@ -28,7 +27,3 @@ License: GPL-2.0+
  On Debian systems, the complete text of the GNU General
  Public License version 2 can be found in "/usr/share/common-licenses/GPL-2".
 
-# Please also look if there are files or directories which have a
-# different copyright/license attached and list them here.
-# Please avoid to pick license terms that are more restrictive than the
-# packaged work, as it may make Debian's contributions unacceptable upstream.
