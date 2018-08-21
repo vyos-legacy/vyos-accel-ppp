@@ -1,0 +1,15 @@
+Source: vyos-accel-ppp
+Section: unknown
+Priority: optional
+Maintainer: root <vyosdev@derith.de>
+Build-Depends: cdbs, debhelper (>= 9), cmake
+Standards-Version: 3.9.5
+Homepage: <insert the upstream URL, if relevant>
+#Vcs-Git: git://anonscm.debian.org/collab-maint/vyos-accel-ppp.git
+#Vcs-Browser: http://anonscm.debian.org/?p=collab-maint/vyos-accel-ppp.git;a=summary
+
+Package: vyos-accel-ppp
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: <insert up to 60 chars description>
+ <insert long description, indented with spaces>

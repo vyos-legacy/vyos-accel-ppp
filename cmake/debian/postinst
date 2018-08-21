@@ -1,0 +1,8 @@
+#!/bin/sh
+
+chmod +x /etc/init.d/accel-ppp
+
+mkdir /var/log/accel-ppp > /dev/null 2>&1
+mkdir /var/lib/accel-ppp > /dev/null 2>&1
+
+exit 0
