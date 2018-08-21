@@ -1,5 +1,5 @@
 vyos-accel-ppp (1.11.2-1) unstable; urgency=low
 
-  * Initial release (Closes: #nnnn)  <nnnn is the bug number of your ITP>
+  * Initial release for T742
 
- -- root <vyosdev@derith.de>  Tue, 21 Aug 2018 20:24:33 +0000
+ -- hagbard <vyosdev@derith.de>  Tue, 21 Aug 2018 20:24:33 +0000
