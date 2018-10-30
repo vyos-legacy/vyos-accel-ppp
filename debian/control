@@ -2,7 +2,7 @@ Source: vyos-accel-ppp
 Section: net 
 Priority: optional
 Maintainer: hagbard <vyosdev@derith.de>
-Build-Depends: cdbs, debhelper (>= 9), cmake
+Build-Depends: cdbs, debhelper (>= 9), cmake, libpcre3-dev, libssl-dev
 Standards-Version: 3.9.5
 Homepage: https://accel-ppp.org
 Vcs-Git: git://git.code.sf.net/p/accel-ppp/code accel-ppp.git
