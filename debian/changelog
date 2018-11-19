@@ -1,3 +1,9 @@
+vyos-accel-ppp (1.11.2-2) unstable; urgency=low
+
+  * adding snmp and lua support and requirements
+
+ -- hagbard <vyosdev@derith.de>  Tue, 30 Oct 2018 12:23:35 -0700
+
 vyos-accel-ppp (1.11.2-1) unstable; urgency=low
 
   * Initial release for T742

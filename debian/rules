@@ -9,3 +9,9 @@ DH_VERBOSE=1
 %:
 	dh $@
 
+
+override_dh_auto_configure:
+	dh_auto_configure -- -DNETSNMP=TRUE -DLUA=TRUE
+
+override_dh_auto_clean:
+	dh_auto_clean -- rm -rf obj-x86_64-linux-gnu 
