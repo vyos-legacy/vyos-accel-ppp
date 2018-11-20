@@ -13,6 +13,12 @@ Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: accel-ppp is a high performance VPN server application for linux. 
  Its goal is aggregation of various popular VPN techniques to a single application.
 
+Package: vyos-accel-ppp-ipoe-kmod
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: IPoE kernel module
+ Internet Protocol over Ethernet (IPoE) is a method of delivering an IP payload over an Ethernet-based access network or an access network using bridged Ethernet over Asynchronous Transfer Mode (ATM) without using PPPoE. It directly encapsulates the IP datagrams in Ethernet frames, using the standard RFC 894 encapsulation.
+  The use of IPoE addresses the disadvantage that PPP is unsuited for multicast delivery to multiple users. Typically, IPoE uses Dynamic Host Configuration Protocol and Extensible Authentication Protocol to provide the same functionality as PPPoE, but in a less robust manner. 
 
 Package: vyos-accel-ppp-doc
 Architecture: all

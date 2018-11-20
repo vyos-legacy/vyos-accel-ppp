@@ -379,6 +379,11 @@ early_out:
 	goto out;
 }
 
+static void print_netns(struct ap_session *ses, char *buf)
+{
+	snprintf(buf, CELL_SIZE, "%s", ses->net->name);
+}
+
 static void print_ifname(struct ap_session *ses, char *buf)
 {
 	snprintf(buf, CELL_SIZE, "%s", ses->ifname);
@@ -392,9 +397,54 @@ static void print_username(struct ap_session *ses, char *buf)
 		*buf = 0;
 }
 
+static void print_ip6_dp(struct ap_session *ses, char *buf)
+{
+	struct ipv6db_addr_t *a;
+	char *ptr;
+
+	if (!ses->ipv6_dp) {
+		*buf = 0;
+		return;
+	}
+
+	a = list_entry(ses->ipv6_dp->prefix_list.next, typeof(*a), entry);
+	inet_ntop(AF_INET6, &a->addr, buf, 64);
+	ptr = strchr(buf, 0);
+	sprintf(ptr, "/%i", a->prefix_len);
+}
+
+static void print_ip6(struct ap_session *ses, char *buf)
+{
+	struct ipv6db_addr_t *a;
+	struct in6_addr addr;
+	char *ptr;
+
+	if (!ses->ipv6 || list_empty(&ses->ipv6->addr_list)) {
+		*buf = 0;
+		return;
+	}
+
+	a = list_entry(ses->ipv6->addr_list.next, typeof(*a), entry);
+	if (a->prefix_len == 0) {
+		*buf = 0;
+		return;
+	}
+
+	build_ip6_addr(a, ses->ipv6->peer_intf_id, &addr);
+
+	inet_ntop(AF_INET6, &addr, buf, 64);
+	ptr = strchr(buf, 0);
+	sprintf(ptr, "/%i", a->prefix_len);
+}
+
 static void print_ip(struct ap_session *ses, char *buf)
 {
-	u_inet_ntoa(ses->ipv4 ? ses->ipv4->peer_addr : 0, buf);
+	if (!ses->ipv4) {
+		print_ip6(ses,buf);
+		return;
+	}
+
+	u_inet_ntoa(ses->ipv4->peer_addr, buf);
 }
 
 static void print_type(struct ap_session *ses, char *buf)
@@ -444,6 +494,18 @@ static void print_uptime(struct ap_session *ses, char *buf)
 		snprintf(time_str, 13, "%02i:%02i:%02i", hour, min, sec);
 
 	sprintf(buf, "%s", time_str);
+}
+
+static void print_uptime_raw(struct ap_session *ses, char *buf)
+{
+	time_t uptime;
+
+	if (ses->stop_time)
+		uptime = ses->stop_time - ses->start_time;
+	else
+		uptime = _time() - ses->start_time;
+
+	sprintf(buf, "%lu", (unsigned long)uptime);
 }
 
 static void print_calling_sid(struct ap_session *ses, char *buf)
@@ -576,12 +638,16 @@ static void init(void)
 
 	cli_register_simple_cmd2(show_ses_exec, show_ses_help, 2, "show", "sessions");
 
+	cli_show_ses_register("netns", "network namespace name", print_netns);
 	cli_show_ses_register("ifname", "interface name", print_ifname);
 	cli_show_ses_register("username", "user name", print_username);
 	cli_show_ses_register("ip", "IP address", print_ip);
+	cli_show_ses_register("ip6", "IPv6 address", print_ip6);
+	cli_show_ses_register("ip6-dp", "IPv6 delegated prefix", print_ip6_dp);
 	cli_show_ses_register("type", "VPN type", print_type);
 	cli_show_ses_register("state", "state of session", print_state);
-	cli_show_ses_register("uptime", "uptime", print_uptime);
+	cli_show_ses_register("uptime", "uptime (human readable)", print_uptime);
+	cli_show_ses_register("uptime-raw", "uptime (in seconds)", print_uptime_raw);
 	cli_show_ses_register("calling-sid", "calling station id", print_calling_sid);
 	cli_show_ses_register("called-sid", "called station id", print_called_sid);
 	cli_show_ses_register("sid", "session id", print_sid);

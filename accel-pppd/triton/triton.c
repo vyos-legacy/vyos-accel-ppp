@@ -5,6 +5,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <limits.h>
+#include <assert.h>
+#include <ucontext.h>
+#include <setjmp.h>
 #include <sys/resource.h>
 
 #include "triton_p.h"
@@ -13,14 +16,13 @@
 #define WORKER_STACK_SIZE 1024*1024
 
 int thread_count = 2;
-int thread_count_max = 200;
 int max_events = 64;
 
 static spinlock_t threads_lock;
 static LIST_HEAD(threads);
 static LIST_HEAD(sleep_threads);
 
-static LIST_HEAD(ctx_queue);
+static struct list_head ctx_queue[CTX_PRIO_MAX];
 
 static spinlock_t ctx_list_lock;
 static LIST_HEAD(ctx_list);
@@ -49,7 +51,9 @@ static struct triton_timer_t ru_timer = {
 };
 struct triton_context_t default_ctx;
 
-static struct triton_context_t __thread *this_ctx;
+static __thread struct triton_context_t *this_ctx;
+static __thread jmp_buf jmp_env;
+static __thread void *thread_frame;
 
 #define log_debug2(fmt, ...)
 
@@ -77,10 +81,31 @@ static void __config_reload(void (*notify)(int))
 }
 
 static void ctx_thread(struct _triton_context_t *ctx);
+
+static int check_ctx_queue_empty(struct _triton_thread_t *t)
+{
+	int i;
+
+	for (i = 0; i < CTX_PRIO_MAX; i++) {
+		if (!list_empty(&t->wakeup_list[i])) {
+			t->ctx = list_entry(t->wakeup_list[i].next, struct _triton_context_t, entry2);
+			return 1;
+		}
+
+		if (!list_empty(&ctx_queue[i])) {
+			t->ctx = list_entry(ctx_queue[i].next, struct _triton_context_t, entry2);
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
 static void* triton_thread(struct _triton_thread_t *thread)
 {
 	sigset_t set;
 	int sig, need_free;
+	void *stack;
 
 	sigfillset(&set);
 	sigdelset(&set, SIGKILL);
@@ -92,33 +117,40 @@ static void* triton_thread(struct _triton_thread_t *thread)
 	sigaddset(&set, SIGUSR1);
 	sigaddset(&set, SIGQUIT);
 
+	thread_frame = __builtin_frame_address(0);
+
 	pthread_mutex_lock(&thread->sleep_lock);
 	pthread_mutex_unlock(&thread->sleep_lock);
 
 	while (1) {
 		spin_lock(&threads_lock);
-		if (!list_empty(&ctx_queue) && !need_config_reload && triton_stat.thread_active <= thread_count) {
-			thread->ctx = list_entry(ctx_queue.next, typeof(*thread->ctx), entry2);
-			log_debug2("thread: %p: dequeued ctx %p\n", thread, thread->ctx);
-			list_del(&thread->ctx->entry2);
-			spin_unlock(&threads_lock);
-			spin_lock(&thread->ctx->lock);
-			thread->ctx->thread = thread;
-			thread->ctx->queued = 0;
-			spin_unlock(&thread->ctx->lock);
-			__sync_sub_and_fetch(&triton_stat.context_pending, 1);
-		} else {
-			if (triton_stat.thread_count > thread_count + triton_stat.context_sleeping) {
-				__sync_sub_and_fetch(&triton_stat.thread_active, 1);
-				__sync_sub_and_fetch(&triton_stat.thread_count, 1);
-				list_del(&thread->entry);
+		if (!need_config_reload && check_ctx_queue_empty(thread)) {
+			if (thread->ctx->asleep && thread->ctx->wakeup) {
+				log_debug2("thread: %p: wakeup ctx %p\n", thread, thread->ctx);
+				list_del(&thread->ctx->entry2);
 				spin_unlock(&threads_lock);
-				pthread_detach(pthread_self());
-				log_debug2("thread: %p: exit\n", thread);
-				_free(thread);
-				return NULL;
+
+				this_ctx = thread->ctx->ud;
+				if (this_ctx->before_switch)
+					this_ctx->before_switch(this_ctx, thread->ctx->bf_arg);
+
+				stack = alloca(thread->ctx->uc->uc_stack.ss_size + 64);
+				asm volatile("" :: "m" (stack));
+
+				memcpy(thread_frame - thread->ctx->uc->uc_stack.ss_size, thread->ctx->uc->uc_stack.ss_sp, thread->ctx->uc->uc_stack.ss_size);
+				setcontext(thread->ctx->uc);
+				abort();
+			} else {
+				log_debug2("thread: %p: dequeued ctx %p\n", thread, thread->ctx);
+				list_del(&thread->ctx->entry2);
+				thread->ctx->thread = thread;
+				thread->ctx->queued = 0;
+				spin_unlock(&threads_lock);
+				__sync_sub_and_fetch(&triton_stat.context_pending, 1);
 			}
+		} else {
 			log_debug2("thread: %p: sleeping\n", thread);
+
 			if (!terminate)
 				list_add(&thread->entry2, &sleep_threads);
 
@@ -149,31 +181,33 @@ static void* triton_thread(struct _triton_thread_t *thread)
 			spin_unlock(&threads_lock);
 		}
 
-		log_debug2("thread %p: ctx=%p %p\n", thread, thread->ctx, thread->ctx ? thread->ctx->thread : NULL);
-		this_ctx = thread->ctx->ud;
-		if (thread->ctx->ud->before_switch)
-			thread->ctx->ud->before_switch(thread->ctx->ud, thread->ctx->bf_arg);
+		if (setjmp(jmp_env) == 0) {
+			log_debug2("thread %p: ctx=%p %p\n", thread, thread->ctx, thread->ctx ? thread->ctx->thread : NULL);
+			this_ctx = thread->ctx->ud;
+			if (this_ctx->before_switch)
+				this_ctx->before_switch(this_ctx, thread->ctx->bf_arg);
 
-cont:
-		log_debug2("thread %p: switch to %p\n", thread, thread->ctx);
-		ctx_thread(thread->ctx);
-		log_debug2("thread %p: switch from %p %p\n", thread, thread->ctx, thread->ctx->thread);
+			while (1) {
+				log_debug2("thread %p: switch to %p\n", thread, thread->ctx);
+				ctx_thread(thread->ctx);
+				log_debug2("thread %p: switch from %p %p\n", thread, thread->ctx, thread->ctx->thread);
 
-		spin_lock(&threads_lock);
-		if (thread->ctx->pending && !thread->ctx->need_free) {
+				spin_lock(&threads_lock);
+				if (!thread->ctx->pending || thread->ctx->need_free)
+					break;
+				spin_unlock(&threads_lock);
+			}
+
+			thread->ctx->thread = NULL;
+			need_free = thread->ctx->need_free;
 			spin_unlock(&threads_lock);
-			goto cont;
-		}
-		thread->ctx->thread = NULL;
-		need_free = thread->ctx->need_free;
-		spin_unlock(&threads_lock);
 
-		if (need_free) {
-			log_debug2("- context %p removed\n", thread->ctx);
-			triton_context_release(thread->ctx);
+			if (need_free) {
+				log_debug2("- context %p removed\n", thread->ctx);
+				triton_context_release(thread->ctx);
+			}
+			thread->ctx = NULL;
 		}
-
-		thread->ctx = NULL;
 	}
 }
 
@@ -261,6 +295,8 @@ static void ctx_thread(struct _triton_context_t *ctx)
 
 struct _triton_thread_t *create_thread()
 {
+	int i;
+
 	pthread_attr_t attr;
 	struct _triton_thread_t *thread = _malloc(sizeof(*thread));
 	if (!thread) {
@@ -268,13 +304,18 @@ struct _triton_thread_t *create_thread()
 		return NULL;
 	}
 
+
+	memset(thread, 0, sizeof(*thread));
+
+	for (i = 0; i < CTX_PRIO_MAX; i++)
+		INIT_LIST_HEAD(&thread->wakeup_list[i]);
+
+	pthread_mutex_init(&thread->sleep_lock, NULL);
+	pthread_mutex_lock(&thread->sleep_lock);
+
 	pthread_attr_init(&attr);
 	pthread_attr_setstacksize(&attr, WORKER_STACK_SIZE);
 
-	memset(thread, 0, sizeof(*thread));
-	pthread_mutex_init(&thread->sleep_lock, NULL);
-	pthread_cond_init(&thread->sleep_cond, NULL);
-	pthread_mutex_lock(&thread->sleep_lock);
 	while (pthread_create(&thread->thread, &attr, (void*(*)(void*))triton_thread, thread))
 		sleep(1);
 
@@ -288,17 +329,13 @@ int triton_queue_ctx(struct _triton_context_t *ctx)
 {
 	spin_lock(&threads_lock);
 	ctx->pending = 1;
-	if (ctx->thread || ctx->queued || ctx->init || ctx->need_free) {
+	if (ctx->thread || ctx->entry2.next || ctx->need_free) {
 		spin_unlock(&threads_lock);
 		return 0;
 	}
 
-	if (list_empty(&sleep_threads) || need_config_reload || triton_stat.thread_active > thread_count ||
-		(ctx->priority == 0 && triton_stat.thread_count > thread_count_max)) {
-		if (ctx->priority)
-			list_add(&ctx->entry2, &ctx_queue);
-		else
-			list_add_tail(&ctx->entry2, &ctx_queue);
+	if (list_empty(&sleep_threads) || ctx->init || need_config_reload) {
+		list_add_tail(&ctx->entry2, &ctx_queue[ctx->priority]);
 		spin_unlock(&threads_lock);
 		ctx->queued = 1;
 		log_debug2("ctx %p: queued\n", ctx);
@@ -334,6 +371,7 @@ int __export triton_context_register(struct triton_context_t *ud, void *bf_arg)
 	ctx->bf_arg = bf_arg;
 	ctx->init = 1;
 	ctx->refs = 1;
+	ctx->priority = 1;
 	spinlock_init(&ctx->lock);
 	INIT_LIST_HEAD(&ctx->handlers);
 	INIT_LIST_HEAD(&ctx->timers);
@@ -416,37 +454,9 @@ void __export triton_context_set_priority(struct triton_context_t *ud, int prio)
 {
 	struct _triton_context_t *ctx = (struct _triton_context_t *)ud->tpd;
 
-	ctx->priority = prio > 0;
-}
+	assert(prio >= 0 && prio < CTX_PRIO_MAX);
 
-void __export triton_context_schedule()
-{
-	struct _triton_context_t *ctx = (struct _triton_context_t *)this_ctx->tpd;
-	struct _triton_thread_t *t = NULL;
-
-	log_debug2("ctx %p: enter schedule\n", ctx);
-	__sync_add_and_fetch(&triton_stat.context_sleeping, 1);
-	__sync_sub_and_fetch(&triton_stat.thread_active, 1);
-	pthread_mutex_lock(&ctx->thread->sleep_lock);
-	while (1) {
-		if (ctx->wakeup) {
-			ctx->wakeup = 0;
-			break;
-		} else {
-			if (!t && triton_stat.thread_count <= thread_count + triton_stat.context_sleeping) {
-				t = create_thread();
-				spin_lock(&threads_lock);
-				list_add_tail(&t->entry, &threads);
-				spin_unlock(&threads_lock);
-				pthread_mutex_unlock(&t->sleep_lock);
-			}
-			pthread_cond_wait(&ctx->thread->sleep_cond, &ctx->thread->sleep_lock);
-		}
-	}
-	pthread_mutex_unlock(&ctx->thread->sleep_lock);
-	__sync_sub_and_fetch(&triton_stat.context_sleeping, 1);
-	__sync_add_and_fetch(&triton_stat.thread_active, 1);
-	log_debug2("ctx %p: exit schedule\n", ctx);
+	ctx->priority = prio;
 }
 
 struct triton_context_t __export *triton_context_self(void)
@@ -460,6 +470,52 @@ void triton_context_print(void)
 
 	list_for_each_entry(ctx, &ctx_list, entry)
 		printf("%p\n", ctx);
+}
+
+static ucontext_t * __attribute__((noinline)) alloc_context()
+{
+	ucontext_t *uc;
+	void *frame = __builtin_frame_address(0);
+	size_t stack_size = thread_frame - frame;
+
+	uc = _malloc(sizeof(*uc) + stack_size);
+	uc->uc_stack.ss_sp = (void *)(uc + 1);
+	uc->uc_stack.ss_size = stack_size;
+	memcpy(uc->uc_stack.ss_sp, frame, stack_size);
+
+	return uc;
+}
+
+void __export triton_context_schedule()
+{
+	volatile struct _triton_context_t *ctx = (struct _triton_context_t *)this_ctx->tpd;
+
+	log_debug2("ctx %p: enter schedule\n", ctx);
+	__sync_add_and_fetch(&triton_stat.context_sleeping, 1);
+
+	ctx->uc = alloc_context();
+
+	getcontext(ctx->uc);
+
+	barrier();
+
+	ctx = (struct _triton_context_t *)this_ctx->tpd;
+
+	spin_lock(&threads_lock);
+	if (ctx->wakeup) {
+		ctx->asleep = 0;
+		ctx->wakeup = 0;
+		spin_unlock(&threads_lock);
+		_free(ctx->uc);
+		ctx->uc = NULL;
+		__sync_sub_and_fetch(&triton_stat.context_sleeping, 1);
+		log_debug2("ctx %p: exit schedule\n", ctx);
+	} else {
+		ctx->asleep = 1;
+		ctx->thread->ctx = NULL;
+		spin_unlock(&threads_lock);
+		longjmp(jmp_env, 1);
+	}
 }
 
 void __export triton_context_wakeup(struct triton_context_t *ud)
@@ -476,30 +532,36 @@ void __export triton_context_wakeup(struct triton_context_t *ud)
 		if (ctx->pending)
 			r = triton_queue_ctx(ctx);
 		spin_unlock(&ctx->lock);
-		if (r)
-			triton_thread_wakeup(ctx->thread);
-		return;
+	} else {
+		spin_lock(&threads_lock);
+		/* In some cases (pppd_compat.c), triton_context_wakeup() might
+		 * be called before triton_context_schedule(). When that
+		 * happens, we must not add 'ctx' to the wakeup_list as it is
+		 * still awake. However we need to set the 'wakeup' flag. This
+		 * way, when triton_context_schedule() will run, it will
+		 * realise that triton_context_wakeup() was already executed
+		 * and will avoid putting 'ctx' in sleep mode.
+		 */
+		ctx->wakeup = 1;
+		if (ctx->asleep) {
+			list_add_tail(&ctx->entry2, &ctx->thread->wakeup_list[ctx->priority]);
+			r = ctx->thread->ctx == NULL;
+		}
+		spin_unlock(&threads_lock);
 	}
 
-	pthread_mutex_lock(&ctx->thread->sleep_lock);
-	ctx->wakeup = 1;
-	pthread_cond_signal(&ctx->thread->sleep_cond);
-	pthread_mutex_unlock(&ctx->thread->sleep_lock);
+	if (r)
+		triton_thread_wakeup(ctx->thread);
 }
 
 int __export triton_context_call(struct triton_context_t *ud, void (*func)(void *), void *arg)
 {
-	struct _triton_context_t *ctx;
+	struct _triton_context_t *ctx = ud ? (struct _triton_context_t *)ud->tpd : (struct _triton_context_t *)default_ctx.tpd;
 	struct _triton_ctx_call_t *call = mempool_alloc(call_pool);
 	int r;
 
 	if (!call)
 		return -1;
-
-	if (ud)
-		ctx = (struct _triton_context_t *)ud->tpd;
-	else
-		ctx = (struct _triton_context_t *)default_ctx.tpd;
 
 	call->func = func;
 	call->arg = arg;
@@ -580,7 +642,7 @@ static void ru_update(struct triton_timer_t *t)
 
 void __export triton_register_init(int order, void (*func)(void))
 {
-	struct _triton_init_t *i1, *i = malloc(sizeof(*i));
+	struct _triton_init_t *i1, *i = _malloc(sizeof(*i));
 	struct list_head *p = init_list.next;
 
 
@@ -598,11 +660,16 @@ void __export triton_register_init(int order, void (*func)(void))
 
 int __export triton_init(const char *conf_file)
 {
+	int i;
+
 	spinlock_init(&threads_lock);
 	spinlock_init(&ctx_list_lock);
 
 	ctx_pool = mempool_create(sizeof(struct _triton_context_t));
 	call_pool = mempool_create(sizeof(struct _triton_ctx_call_t));
+
+	for (i = 0; i < CTX_PRIO_MAX; i++)
+		INIT_LIST_HEAD(&ctx_queue[i]);
 
 	if (conf_load(conf_file))
 		return -1;
@@ -635,7 +702,7 @@ int __export triton_load_modules(const char *mod_sect)
 		i = list_entry(init_list.next, typeof(*i), entry);
 		i->func();
 		list_del(&i->entry);
-		free(i);
+		_free(i);
 	}
 
 	return 0;
@@ -671,10 +738,6 @@ void __export triton_run()
 			thread_count = 2;
 		}
 	}
-
-	opt = conf_get_opt("core", "thread-count-max");
-	if (opt && atoi(opt) > 0)
-		thread_count_max = atoi(opt);
 
 	for(i = 0; i < thread_count; i++) {
 		t = create_thread();

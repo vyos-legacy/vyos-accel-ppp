@@ -42,6 +42,7 @@ static int conf_AdvCurHopLimit = 64;
 static int conf_AdvDefaultLifetime;
 static int conf_AdvPrefixValidLifetime = 2592000;
 static int conf_AdvPrefixPreferredLifetime = 604800;
+static int conf_AdvPrefixOnLinkFlag;
 static int conf_AdvPrefixAutonomousFlag;
 
 
@@ -93,8 +94,9 @@ static void *pd_key;
 #define BUF_SIZE 1024
 static mempool_t buf_pool;
 
-static void ipv6_nd_send_ra(struct ipv6_nd_handler_t *h, struct sockaddr_in6 *addr)
+static void ipv6_nd_send_ra(struct ipv6_nd_handler_t *h, struct sockaddr_in6 *dst_addr)
 {
+	struct ap_session *ses = h->ses;
 	void *buf = mempool_alloc(buf_pool), *endptr;
 	struct nd_router_advert *adv = buf;
 	struct nd_opt_prefix_info *pinfo;
@@ -104,14 +106,15 @@ static void ipv6_nd_send_ra(struct ipv6_nd_handler_t *h, struct sockaddr_in6 *ad
 	struct nd_opt_dnssl_info_local *dnsslinfo;
 	//struct nd_opt_mtu *mtu;
 	struct ipv6db_addr_t *a;
-	int i;
+	struct in6_addr addr, peer_addr;
+	int i, prefix_len;
 
 	if (!buf) {
 		log_emerg("out of memory\n");
 		return;
 	}
 
-	if (!h->ses->ipv6) {
+	if (!ses->ipv6) {
 		triton_timer_del(&h->timer);
 		return;
 	}
@@ -127,23 +130,35 @@ static void ipv6_nd_send_ra(struct ipv6_nd_handler_t *h, struct sockaddr_in6 *ad
 	adv->nd_ra_retransmit = htonl(conf_AdvRetransTimer);
 
 	pinfo = (struct nd_opt_prefix_info *)(adv + 1);
-	list_for_each_entry(a, &h->ses->ipv6->addr_list, entry) {
+	list_for_each_entry(a, &ses->ipv6->addr_list, entry) {
+		prefix_len = a->prefix_len == 128 ? 64 : a->prefix_len;
 		memset(pinfo, 0, sizeof(*pinfo));
 		pinfo->nd_opt_pi_type = ND_OPT_PREFIX_INFORMATION;
 		pinfo->nd_opt_pi_len = 4;
-		pinfo->nd_opt_pi_prefix_len = a->prefix_len;
-		pinfo->nd_opt_pi_flags_reserved = ND_OPT_PI_FLAG_ONLINK |
-			(a->flag_auto || (conf_AdvPrefixAutonomousFlag && a->prefix_len == 64)) ? ND_OPT_PI_FLAG_AUTO : 0;
+		pinfo->nd_opt_pi_prefix_len = prefix_len;
+		pinfo->nd_opt_pi_flags_reserved =
+			((a->flag_onlink || conf_AdvPrefixOnLinkFlag) ? ND_OPT_PI_FLAG_ONLINK : 0) |
+			((a->flag_auto || (conf_AdvPrefixAutonomousFlag && prefix_len == 64)) ? ND_OPT_PI_FLAG_AUTO : 0);
 		pinfo->nd_opt_pi_valid_time = htonl(conf_AdvPrefixValidLifetime);
 		pinfo->nd_opt_pi_preferred_time = htonl(conf_AdvPrefixPreferredLifetime);
-		memcpy(&pinfo->nd_opt_pi_prefix, &a->addr, 8);
+		memcpy(&pinfo->nd_opt_pi_prefix, &a->addr, (prefix_len + 7) / 8);
+		pinfo->nd_opt_pi_prefix.s6_addr[prefix_len / 8] &= ~(0xff >> (prefix_len % 8));
 		pinfo++;
 
 		if (!a->installed) {
-			struct in6_addr addr;
-			memcpy(addr.s6_addr, &a->addr, 8);
-			memcpy(addr.s6_addr + 8, &h->ses->ipv6->intf_id, 8);
-			ip6addr_add(h->ses->ifindex, &addr, a->prefix_len);
+			if (a->prefix_len == 128) {
+				memcpy(addr.s6_addr, &a->addr, 8);
+				memcpy(addr.s6_addr + 8, &ses->ipv6->intf_id, 8);
+				memcpy(peer_addr.s6_addr, &a->addr, 8);
+				memcpy(peer_addr.s6_addr + 8, &ses->ipv6->peer_intf_id, 8);
+				ip6addr_add_peer(ses->ifindex, &addr, &peer_addr);
+			} else {
+				build_ip6_addr(a, ses->ipv6->intf_id, &addr);
+				build_ip6_addr(a, ses->ipv6->peer_intf_id, &peer_addr);
+				if (memcmp(&addr, &peer_addr, sizeof(addr)) == 0)
+					build_ip6_addr(a, ~ses->ipv6->intf_id, &addr);
+				ip6addr_add(ses->ifindex, &addr, a->prefix_len);
+			}
 			a->installed = 1;
 		}
 	}
@@ -185,7 +200,7 @@ static void ipv6_nd_send_ra(struct ipv6_nd_handler_t *h, struct sockaddr_in6 *ad
 	} else
 		endptr = rdnss_addr;
 
-	sendto(h->hnd.fd, buf, endptr - buf, 0, (struct sockaddr *)addr, sizeof(*addr));
+	net->sendto(h->hnd.fd, buf, endptr - buf, 0, (struct sockaddr *)dst_addr, sizeof(*dst_addr));
 
 	mempool_free(buf);
 }
@@ -225,7 +240,7 @@ static int ipv6_nd_read(struct triton_md_handler_t *_h)
 	}
 
 	while (1) {
-		n = recvfrom(h->hnd.fd, icmph, BUF_SIZE, 0, &addr, &addr_len);
+		n = net->recvfrom(h->hnd.fd, icmph, BUF_SIZE, 0, (struct sockaddr *)&addr, &addr_len);
 		if (n == -1) {
 			if (errno == EAGAIN)
 				break;
@@ -269,31 +284,31 @@ static int ipv6_nd_start(struct ap_session *ses)
 	int val;
 	struct ipv6_nd_handler_t *h;
 
-	sock = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+	sock = net->socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
 
 	if (sock < 0) {
 		log_ppp_error("socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6): %s\n", strerror(errno));
 		return -1;
 	}
 
-	if (setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, ses->ifname, strlen(ses->ifname))) {
+	if (net->setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, ses->ifname, strlen(ses->ifname))) {
 		log_ppp_error("ipv6_nd: setsockopt(SO_BINDTODEVICE): %s\n", strerror(errno));
 		goto out_err;
 	}
 
 	val = 2;
-	if (setsockopt(sock, IPPROTO_RAW, IPV6_CHECKSUM, &val, sizeof(val))) {
+	if (net->setsockopt(sock, IPPROTO_RAW, IPV6_CHECKSUM, &val, sizeof(val))) {
 		log_ppp_error("ipv6_nd: setsockopt(IPV6_CHECKSUM): %s\n", strerror(errno));
 		goto out_err;
 	}
 
 	val = 255;
-	if (setsockopt(sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &val, sizeof(val))) {
+	if (net->setsockopt(sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &val, sizeof(val))) {
 		log_ppp_error("ipv6_nd: setsockopt(IPV6_UNICAST_HOPS): %s\n", strerror(errno));
 		goto out_err;
 	}
 
-	if (setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &val, sizeof(val))) {
+	if (net->setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &val, sizeof(val))) {
 		log_ppp_error("ipv6_nd: setsockopt(IPV6_MULTICAST_HOPS): %s\n", strerror(errno));
 		goto out_err;
 	}
@@ -307,7 +322,7 @@ static int ipv6_nd_start(struct ap_session *ses)
 	ICMP6_FILTER_SETBLOCKALL(&filter);
 	ICMP6_FILTER_SETPASS(ND_ROUTER_SOLICIT, &filter);
 
-	if (setsockopt(sock, IPPROTO_ICMPV6, ICMP6_FILTER, &filter, sizeof(filter))) {
+	if (net->setsockopt(sock, IPPROTO_ICMPV6, ICMP6_FILTER, &filter, sizeof(filter))) {
 		log_ppp_error("ipv6_nd: setsockopt(ICMP6_FILTER): %s\n", strerror(errno));
 		goto out_err;
 	}
@@ -317,13 +332,14 @@ static int ipv6_nd_start(struct ap_session *ses)
 	mreq.ipv6mr_multiaddr.s6_addr32[0] = htonl(0xff020000);
 	mreq.ipv6mr_multiaddr.s6_addr32[3] = htonl(0x2);
 
-	if (setsockopt(sock, SOL_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq))) {
+	if (net->setsockopt(sock, SOL_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq))) {
 		log_ppp_error("ipv6_nd: failed to join ipv6 allrouters\n");
 		goto out_err;
 	}
 
 	fcntl(sock, F_SETFD, fcntl(sock, F_GETFD) | FD_CLOEXEC);
-	fcntl(sock, F_SETFL, O_NONBLOCK);
+
+	net->set_nonblocking(sock, 1);
 
 	h = _malloc(sizeof(*h));
 	memset(h, 0, sizeof(*h));
@@ -368,7 +384,7 @@ static void ev_ses_started(struct ap_session *ses)
 		return;
 
 	list_for_each_entry(a, &ses->ipv6->addr_list, entry) {
-		if (a->prefix_len == 64) {
+		if (a->prefix_len && !IN6_IS_ADDR_UNSPECIFIED(&a->addr)) {
 			ipv6_nd_start(ses);
 			break;
 		}
@@ -488,6 +504,7 @@ static void load_config(void)
 
 	conf_AdvManagedFlag = triton_module_loaded("ipv6_dhcp");
 	conf_AdvOtherConfigFlag = triton_module_loaded("ipv6_dhcp");
+	conf_AdvPrefixOnLinkFlag = 1;
 	conf_AdvPrefixAutonomousFlag = !conf_AdvManagedFlag;
 	conf_rdnss_lifetime = conf_MaxRtrAdvInterval;
 
@@ -537,6 +554,10 @@ static void load_config(void)
 	opt = conf_get_opt("ipv6-nd", "AdvPreferredLifetime");
 	if (opt)
 		conf_AdvPrefixPreferredLifetime = atoi(opt);
+
+	opt = conf_get_opt("ipv6-nd", "AdvOnLinkFlag");
+	if (opt)
+		conf_AdvPrefixOnLinkFlag = atoi(opt);
 
 	opt = conf_get_opt("ipv6-nd", "AdvAutonomousFlag");
 	if (opt)

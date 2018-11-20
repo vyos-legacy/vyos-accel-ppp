@@ -102,10 +102,8 @@ static int dns_recv_conf_req(struct ppp_ipcp_t *ipcp, struct ipcp_option_t *opt,
 	if (opt32->hdr.len != 6)
 		return IPCP_OPT_REJ;
 
-	if (!dns_opt->addr) {
-		dns_opt->addr = opt32->val;
-		return IPCP_OPT_ACK;
-	}
+	if (!dns_opt->addr)
+		return IPCP_OPT_REJ;
 
 	if (dns_opt->addr == opt32->val)
 		return IPCP_OPT_ACK;
@@ -151,11 +149,15 @@ static void ev_dns(struct ev_dns_t *ev)
 
 	ppp = container_of(ev->ses, typeof(*ppp), ses);
 
-	dns_opt = container_of(ipcp_find_option(ppp, &dns1_opt_hnd), typeof(*dns_opt), opt);
-	dns_opt->addr = ev->dns1;
+	if (ev->dns1) {
+		dns_opt = container_of(ipcp_find_option(ppp, &dns1_opt_hnd), typeof(*dns_opt), opt);
+		dns_opt->addr = ev->dns1;
+	}
 
-	dns_opt = container_of(ipcp_find_option(ppp, &dns2_opt_hnd), typeof(*dns_opt), opt);
-	dns_opt->addr = ev->dns2;
+	if (ev->dns2) {
+		dns_opt = container_of(ipcp_find_option(ppp, &dns2_opt_hnd), typeof(*dns_opt), opt);
+		dns_opt->addr = ev->dns2;
+	}
 }
 
 static void load_config(void)

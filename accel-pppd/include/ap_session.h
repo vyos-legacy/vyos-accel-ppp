@@ -1,6 +1,9 @@
 #ifndef __AP_SESSION_H__
 #define __AP_SESSION_H__
 
+#include <sys/socket.h>
+
+#include "triton.h"
 #include "ap_net.h"
 
 //#define AP_SESSIONID_LEN 16
@@ -81,6 +84,7 @@ struct ap_session
 	struct ipv6db_prefix_t *ipv6_dp;
 	char *ipv4_pool_name;
 	char *ipv6_pool_name;
+	struct ap_net *net;
 
 	const struct ap_ctrl *ctrl;
 
@@ -125,14 +129,11 @@ struct ap_session_stat
 extern pthread_rwlock_t ses_lock;
 extern struct list_head ses_list;
 extern int ap_shutdown;
-extern int sock_fd; // internet socket for ioctls
-extern int sock6_fd; // internet socket for ioctls
+extern int sock_fd;
+extern int sock6_fd;
 extern int urandom_fd;
 extern struct ap_session_stat ap_session_stat;
 extern int conf_max_sessions;
-
-extern __thread const struct ap_net *net;
-extern const struct ap_net def_net;
 
 void ap_session_init(struct ap_session *ses);
 void ap_session_set_ifindex(struct ap_session *ses);

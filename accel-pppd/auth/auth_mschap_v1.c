@@ -268,14 +268,18 @@ static void auth_result(struct chap_auth_data *ad, int res)
 		} else
 			ppp_auth_failed(ad->ppp, name);
 	} else {
-		if (ppp_auth_succeeded(ad->ppp, name)) {
-			chap_send_failure(ad, ad->mschap_error);
-			ap_session_terminate(&ad->ppp->ses, TERM_AUTH_ERROR, 0);
+		if (!ad->started) {
+			if (ppp_auth_succeeded(ad->ppp, name)) {
+				chap_send_failure(ad, ad->mschap_error);
+				ap_session_terminate(&ad->ppp->ses, TERM_AUTH_ERROR, 0);
+			} else {
+				chap_send_success(ad, ad->id);
+				ad->started = 1;
+				if (conf_interval)
+					triton_timer_add(ad->ppp->ses.ctrl->ctx, &ad->interval, 0);
+			}
 		} else {
 			chap_send_success(ad, ad->id);
-			ad->started = 1;
-			if (conf_interval)
-				triton_timer_add(ad->ppp->ses.ctrl->ctx, &ad->interval, 0);
 		}
 	}
 
@@ -437,7 +441,6 @@ static int chap_check_response(struct chap_auth_data *ad, struct chap_response *
 	if (!passwd) {
 		if (conf_ppp_verbose)
 			log_ppp_warn("mschap-v1: user not found\n");
-		chap_send_failure(ad, conf_msg_failure);
 		return PWDB_DENIED;
 	}
 

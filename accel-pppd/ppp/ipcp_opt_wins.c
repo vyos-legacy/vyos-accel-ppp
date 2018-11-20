@@ -102,10 +102,8 @@ static int wins_recv_conf_req(struct ppp_ipcp_t *ipcp, struct ipcp_option_t *opt
 	if (opt32->hdr.len != 6)
 		return IPCP_OPT_REJ;
 
-	if (!wins_opt->addr) {
-		wins_opt->addr = opt32->val;
-		return IPCP_OPT_ACK;
-	}
+	if (!wins_opt->addr)
+		return IPCP_OPT_REJ;
 
 	if (wins_opt->addr == opt32->val)
 		return IPCP_OPT_ACK;
@@ -151,11 +149,15 @@ static void ev_wins(struct ev_wins_t *ev)
 
 	ppp = container_of(ev->ses, typeof(*ppp), ses);
 
-	wins_opt = container_of(ipcp_find_option(ppp, &wins1_opt_hnd), typeof(*wins_opt), opt);
-	wins_opt->addr = ev->wins1;
+	if (ev->wins1) {
+		wins_opt = container_of(ipcp_find_option(ppp, &wins1_opt_hnd), typeof(*wins_opt), opt);
+		wins_opt->addr = ev->wins1;
+	}
 
-	wins_opt = container_of(ipcp_find_option(ppp, &wins2_opt_hnd), typeof(*wins_opt), opt);
-	wins_opt->addr = ev->wins2;
+	if (ev->wins2) {
+		wins_opt = container_of(ipcp_find_option(ppp, &wins2_opt_hnd), typeof(*wins_opt), opt);
+		wins_opt->addr = ev->wins2;
+	}
 }
 
 static void load_config(void)

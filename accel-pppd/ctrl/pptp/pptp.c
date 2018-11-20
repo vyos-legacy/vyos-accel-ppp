@@ -55,12 +55,14 @@ struct pptp_conn_t
 	struct ppp_t ppp;
 };
 
+static int conf_ppp_max_mtu = PPTP_MAX_MTU;
 static int conf_timeout = 5;
 static int conf_echo_interval = 0;
 static int conf_echo_failure = 3;
 static int conf_verbose = 0;
 static int conf_mppe = MPPE_UNSET;
 static const char *conf_ip_pool;
+static const char *conf_ifname;
 
 static mempool_t conn_pool;
 
@@ -75,7 +77,11 @@ static void ppp_finished(struct ap_session *);
 
 static void pptp_ctx_switch(struct triton_context_t *ctx, void *arg)
 {
-	net = &def_net;
+	if (arg) {
+		struct ap_session *s = arg;
+		net = s->net;
+	} else
+		net = def_net;
 	log_switch(ctx, arg);
 }
 
@@ -409,6 +415,9 @@ static int pptp_echo_rqst(struct pptp_conn_t *conn)
 		log_ppp_debug("send [PPTP Echo-Reply <Identifier %x>]\n", out_msg.identifier);
 	}
 
+	if (conn->echo_timer.tpd)
+		triton_timer_mod(&conn->echo_timer, 0);
+
 	return post_msg(conn, &out_msg, sizeof(out_msg));
 }
 
@@ -419,13 +428,10 @@ static int pptp_echo_rply(struct pptp_conn_t *conn)
 	if (conf_verbose)
 		log_ppp_debug("recv [PPTP Echo-Reply <Identifier %x>]\n", msg->identifier);
 
-	/*if (msg->identifier != conn->echo_sent) {
-		log_ppp_warn("pptp:echo: identifier mismatch\n");
-		//return -1;
-	}*/
 	conn->echo_sent = 0;
 	return 0;
 }
+
 static void pptp_send_echo(struct triton_timer_t *t)
 {
 	struct pptp_conn_t *conn = container_of(t, typeof(*conn), echo_timer);
@@ -439,8 +445,7 @@ static void pptp_send_echo(struct triton_timer_t *t)
 		return;
 	}
 
-	conn->echo_sent = random();
-	msg.identifier = conn->echo_sent;
+	msg.identifier = random();
 
 	if (conf_verbose)
 		log_ppp_debug("send [PPTP Echo-Request <Identifier %x>]\n", msg.identifier);
@@ -684,7 +689,7 @@ static int pptp_connect(struct triton_md_handler_t *h)
 		conn->ctrl.started = ppp_started;
 		conn->ctrl.finished = ppp_finished;
 		conn->ctrl.terminate = ppp_terminate;
-		conn->ctrl.max_mtu = PPTP_MAX_MTU;
+		conn->ctrl.max_mtu = conf_ppp_max_mtu;
 		conn->ctrl.type = CTRL_TYPE_PPTP;
 		conn->ctrl.ppp = 1;
 		conn->ctrl.name = "pptp";
@@ -702,6 +707,8 @@ static int pptp_connect(struct triton_md_handler_t *h)
 
 		if (conf_ip_pool)
 			conn->ppp.ses.ipv4_pool_name = _strdup(conf_ip_pool);
+		if (conf_ifname)
+			conn->ppp.ses.ifname_rename = _strdup(conf_ifname);
 
 		triton_context_register(&conn->ctx, &conn->ppp.ses);
 		triton_md_register_handler(&conn->ctx, &conn->hnd);
@@ -757,12 +764,18 @@ static void load_config(void)
 		conf_echo_interval = atoi(opt);
 
 	opt = conf_get_opt("pptp", "echo-failure");
-	if (opt && atoi(opt) > 0)
+	if (opt && atoi(opt) >= 0)
 		conf_echo_failure = atoi(opt);
 
 	opt = conf_get_opt("pptp", "verbose");
 	if (opt && atoi(opt) >= 0)
 		conf_verbose = atoi(opt) > 0;
+
+	opt = conf_get_opt("pptp", "ppp-max-mtu");
+	if (opt && atoi(opt) > 0)
+		conf_ppp_max_mtu = atoi(opt);
+	else
+		conf_ppp_max_mtu = PPTP_MAX_MTU;
 
 	conf_mppe = MPPE_UNSET;
 	opt = conf_get_opt("pptp", "mppe");
@@ -778,6 +791,7 @@ static void load_config(void)
 	}
 
 	conf_ip_pool = conf_get_opt("pptp", "ip-pool");
+	conf_ifname = conf_get_opt("pptp", "ifname");
 
 	switch (iprange_check_activation()) {
 	case IPRANGE_DISABLED:

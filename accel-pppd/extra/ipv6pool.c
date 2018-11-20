@@ -32,6 +32,7 @@ static LIST_HEAD(ippool);
 static LIST_HEAD(dppool);
 static spinlock_t pool_lock;
 static struct ipdb_t ipdb;
+static struct in6_addr conf_gw_addr;
 
 static void in6_addr_add(struct in6_addr *res, const struct in6_addr *arg)
 {
@@ -82,6 +83,7 @@ static void generate_ippool(struct in6_addr *addr, int mask, int prefix_len)
 
 	while (in6_addr_cmp(&ip, &end) <= 0) {
 		it = malloc(sizeof(*it));
+		memset(it, 0, sizeof(*it));
 		it->it.owner = &ipdb;
 		INIT_LIST_HEAD(&it->it.addr_list);
 		a = malloc(sizeof(*a));
@@ -118,6 +120,7 @@ static void generate_dppool(struct in6_addr *addr, int mask, int prefix_len)
 
 	while (in6_addr_cmp(&ip, &end) <= 0) {
 		it = malloc(sizeof(*it));
+		memset(it, 0, sizeof(*it));
 		it->it.owner = &ipdb;
 		INIT_LIST_HEAD(&it->it.prefix_list);
 		a = malloc(sizeof(*a));
@@ -182,18 +185,30 @@ err:
 static struct ipv6db_item_t *get_ip(struct ap_session *ses)
 {
 	struct ippool_item_t *it;
+	struct ipv6db_addr_t *a;
 
 	spin_lock(&pool_lock);
 	if (!list_empty(&ippool)) {
 		it = list_entry(ippool.next, typeof(*it), entry);
 		list_del(&it->entry);
-		it->it.intf_id = 0;
-		it->it.peer_intf_id = 0;
 	} else
 		it = NULL;
 	spin_unlock(&pool_lock);
 
-	return it ? &it->it : NULL;
+	if (it) {
+		a = list_entry(it->it.addr_list.next, typeof(*a), entry);
+		if (a->prefix_len == 128) {
+			memcpy(&it->it.intf_id, conf_gw_addr.s6_addr + 8, 8);
+			memcpy(&it->it.peer_intf_id, a->addr.s6_addr + 8, 8);
+		} else {
+			it->it.intf_id = 0;
+			it->it.peer_intf_id = 0;
+		}
+
+		return &it->it;
+	}
+
+	return NULL;
 }
 
 static void put_ip(struct ap_session *ses, struct ipv6db_item_t *it)
@@ -247,7 +262,10 @@ static void ippool_init(void)
 		return;
 
 	list_for_each_entry(opt, &s->items, entry) {
-		if (!strcmp(opt->name, "delegate"))
+		if (!strcmp(opt->name, "gw-ip6-address")) {
+			if (inet_pton(AF_INET6, opt->val, &conf_gw_addr) == 0)
+				log_error("ipv6_pool: failed to parse gw-ip6-address\n");
+		} else if (!strcmp(opt->name, "delegate"))
 			add_prefix(1, opt->val);
 		else
 			add_prefix(0, opt->name);

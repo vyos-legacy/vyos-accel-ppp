@@ -10,7 +10,7 @@ project(accel-ppp C)
 
 include(cmake/cpack.cmake)
 
-SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -fno-strict-aliasing -D_GNU_SOURCE -fPIC -rdynamic")
+SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -fno-strict-aliasing -D_GNU_SOURCE -fPIC -rdynamic -Wno-unused-result")
 
 IF (NOT DEFINED LIB_SUFFIX)
 	EXECUTE_PROCESS(
@@ -48,7 +48,7 @@ IF (EXISTS ${CMAKE_HOME_DIRECTORY}/.git AND NOT IGNORE_GIT)
 	)
 	STRING(STRIP ${ACCEL_PPP_VERSION} ACCEL_PPP_VERSION)
 ELSE (EXISTS ${CMAKE_HOME_DIRECTORY}/.git AND NOT IGNORE_GIT)
-	SET (ACCEL_PPP_VERSION 1.11.2)
+	SET (ACCEL_PPP_VERSION 1.11.0)
 ENDIF (EXISTS ${CMAKE_HOME_DIRECTORY}/.git AND NOT IGNORE_GIT)
 
 ADD_DEFINITIONS(-DACCEL_PPP_VERSION="${ACCEL_PPP_VERSION}")
@@ -87,6 +87,8 @@ if (NOT BUILD_DRIVER_ONLY)
 	add_subdirectory(accel-pppd)
 	add_subdirectory(crypto)
 	add_subdirectory(accel-cmd)
+
+	install(DIRECTORY DESTINATION /var/log/accel-ppp)
 endif (NOT BUILD_DRIVER_ONLY)
 
 if (BUILD_PPTP_DRIVER)

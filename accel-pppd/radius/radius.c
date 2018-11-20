@@ -62,6 +62,7 @@ static void parse_framed_route(struct radius_pd_t *rpd, const char *attr)
 {
 	char str[32];
 	char *ptr;
+	long int prio = 0;
 	in_addr_t dst;
 	in_addr_t gw;
 	int mask;
@@ -118,6 +119,14 @@ static void parse_framed_route(struct radius_pd_t *rpd, const char *attr)
 			gw = 0;
 		else
 			goto out_err;
+
+		/* Parse priority, if any */
+		if (*ptr) {
+			for (++ptr; *ptr && *ptr != ' '; ptr++);
+			if (*ptr == ' ')
+				if (u_readlong(&prio, ptr + 1, 0, UINT32_MAX) < 0)
+					goto out_err;
+		}
 	} else {
 		mask = 32;
 		gw = 0;
@@ -127,6 +136,7 @@ static void parse_framed_route(struct radius_pd_t *rpd, const char *attr)
 	fr->dst = dst;
 	fr->mask = mask;
 	fr->gw = gw;
+	fr->prio = prio;
 	fr->next = rpd->fr;
 	rpd->fr = fr;
 
@@ -138,15 +148,13 @@ out_err:
 
 int rad_proc_attrs(struct rad_req_t *req)
 {
+	struct ev_wins_t wins = {};
+	struct ev_dns_t dns = {};
 	struct rad_attr_t *attr;
 	struct ipv6db_addr_t *a;
-	struct ev_dns_t dns;
-	struct ev_wins_t wins;
 	int res = 0;
 	struct radius_pd_t *rpd = req->rpd;
 
-	dns.ses = NULL;
-	wins.ses = NULL;
 	req->rpd->acct_interim_interval = conf_acct_interim_interval;
 
 	list_for_each_entry(attr, &req->reply->attrs, entry) {
@@ -444,12 +452,17 @@ static void ses_started(struct ap_session *ses)
 	}
 
 	for (fr = rpd->fr; fr; fr = fr->next) {
-		if (iproute_add(fr->gw ? 0 : rpd->ses->ifindex, 0, fr->dst, fr->gw, 3, fr->mask)) {
+		if (iproute_add(fr->gw ? 0 : rpd->ses->ifindex, 0, fr->dst, fr->gw, 3, fr->mask, fr->prio)) {
 			char dst[17], gw[17];
 			u_inet_ntoa(fr->dst, dst);
 			u_inet_ntoa(fr->gw, gw);
-			log_ppp_warn("radius: failed to add route %s/%i%s\n", dst, fr->mask, gw);
+			log_ppp_warn("radius: failed to add route %s/%i %s %u\n", dst, fr->mask, gw, fr->prio);
 		}
+	}
+
+	if (rpd->auth_reply) {
+		rad_packet_free(rpd->auth_reply);
+		rpd->auth_reply = NULL;
 	}
 }
 
@@ -467,7 +480,7 @@ static void ses_finishing(struct ap_session *ses)
 
 	for (fr = rpd->fr; fr; fr = fr->next) {
 		if (fr->gw)
-			iproute_del(0, fr->dst, 3, fr->mask);
+			iproute_del(0, fr->dst, 3, fr->mask, fr->prio);
 	}
 
 	if (rpd->acct_started || rpd->acct_req)
@@ -501,6 +514,9 @@ static void ses_finished(struct ap_session *ses)
 			rad_req_free(rpd->acct_req);
 		}
 	}
+
+	if (rpd->auth_reply)
+		rad_packet_free(rpd->auth_reply);
 
 	if (rpd->dm_coa_req)
 		dm_coa_cancel(rpd);
@@ -640,9 +656,6 @@ struct radius_pd_t *rad_find_session_pack(struct rad_packet_t *pack)
 	}
 
 	if (!sessionid && !username && !port_id && port == -1 && ipaddr == 0 && !csid)
-		return NULL;
-
-	if (username && !sessionid && port == -1 && ipaddr == 0 && !port_id)
 		return NULL;
 
 	return rad_find_session(sessionid, username, port_id, port, ipaddr, csid);
@@ -832,7 +845,7 @@ static void radius_init(void)
 	ipdb_register(&ipdb);
 
 	triton_event_register_handler(EV_SES_STARTING, (triton_event_func)ses_starting);
-	triton_event_register_handler(EV_SES_STARTED, (triton_event_func)ses_started);
+	triton_event_register_handler(EV_SES_POST_STARTED, (triton_event_func)ses_started);
 	triton_event_register_handler(EV_SES_ACCT_START, (triton_event_func)ses_acct_start);
 	triton_event_register_handler(EV_SES_FINISHING, (triton_event_func)ses_finishing);
 	triton_event_register_handler(EV_SES_FINISHED, (triton_event_func)ses_finished);

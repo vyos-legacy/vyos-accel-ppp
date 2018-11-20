@@ -18,6 +18,7 @@
 #include "genl.h"
 #include "libnetlink.h"
 #include "iputils.h"
+#include "ap_net.h"
 
 #include "vlan_mon.h"
 #include "if_vlan_mon.h"
@@ -503,6 +504,12 @@ static void vlan_mon_mc_close(struct triton_context_t *ctx)
 	triton_context_unregister(ctx);
 }
 
+static void mc_ctx_switch(struct triton_context_t *ctx, void *arg)
+{
+	net = def_net;
+	log_switch(NULL, NULL);
+}
+
 static struct triton_context_t mc_ctx = {
 	.close = vlan_mon_mc_close,
 };
@@ -513,7 +520,12 @@ static struct triton_md_handler_t mc_hnd = {
 
 static void init(void)
 {
-	int mcg_id = genl_resolve_mcg(VLAN_MON_GENL_NAME, VLAN_MON_GENL_MCG, &vlan_mon_genl_id);
+	int mcg_id;
+
+	if (system("modprobe -q vlan_mon"))
+		log_warn("failed to load vlan_mon module\n");
+
+	mcg_id = genl_resolve_mcg(VLAN_MON_GENL_NAME, VLAN_MON_GENL_MCG, &vlan_mon_genl_id);
 	if (mcg_id == -1) {
 		log_warn("vlan_mon: kernel module is not loaded\n");
 		vlan_mon_genl_id = -1;
@@ -531,6 +543,7 @@ static void init(void)
 	fcntl(rth.fd, F_SETFL, O_NONBLOCK);
 	fcntl(rth.fd, F_SETFD, fcntl(rth.fd, F_GETFD) | FD_CLOEXEC);
 
+	mc_ctx.before_switch = mc_ctx_switch;
 	triton_context_register(&mc_ctx, NULL);
 	mc_hnd.fd = rth.fd;
 	triton_md_register_handler(&mc_ctx, &mc_hnd);

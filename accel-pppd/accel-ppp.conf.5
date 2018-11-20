@@ -42,10 +42,14 @@ PPTP controlling connection handling module.
 .br
 PPPoE discovery stage handling module.
 .TP
+.BI sstp
+.br
+SSTP controlling connection handling module.
+.TP
 .BI auth_pap
 PAP authentication module.
 .TP
-.BI auth_chap
+.BI auth_chap_md5
 CHAP (md5) authentication module.
 .TP
 .BI auth_mschap_v1
@@ -295,6 +299,18 @@ Specifies default value for per-interface
 .B proxy-arp
 parameter.
 .TP
+.BI "weight=" n
+Specifies global weight of this server (used for load balancing)
+.TP
+.BI "ip-unnumbered=" 0|1
+Specifies default value for per-interface
+.B ip-unnumbered
+parameter.
+.br
+If ip-unnumbered=1 accel-ppp will always assign /32 mask.
+.br
+Default value is 1.
+.TP
 .BI "interface=" [re:]name[,mode=L2|L3][,shared=0|1][,start=dhcpv4|up|auto]
 .BI "" [,range=x.x.x.x/mask][,ifcfg=0|1]
 .BI "" [,relay=x.x.x.x]
@@ -302,6 +318,10 @@ parameter.
 .BI "" [,src=x.x.x.x]
 .BI "" [,proxy-arp=0|1|2]
 .BI "" [,username=ifname|lua:function]
+.BI "" [,ipv6=0|1]
+.BI "" [,mtu=N]
+.BI "" [,weight=N]
+.BI "" [,ip-unnumbered=0|1]
 .br
 Specifies interface to listen dhcp or unclassified packets. You may specify multiple
 .B interface
@@ -460,6 +480,15 @@ Specifies maximum number of echo-requests may be sent without valid echo-reply, 
 Timeout waiting reply from client in seconds (default 5).
 .TP
 .BI "mppe=" deny|allow|prefer|require
+.TP
+.BI "ifname=" ifname
+If this option is given ppp interface will be renamed using
+.B ifname
+as a template, i.e pptp%d => pptp0.
+.TP
+.BI "ppp-max-mtu=" n
+Set the maximun MTU value that can be negociated for PPP over PPTP
+sessions. Default value is 1436.
 .SH [pppoe]
 .br
 Configuration of PPPoE module.
@@ -480,6 +509,10 @@ Specifies AC-Name tag value. If absent tag will not be sent.
 .TP
 .BI "service-name=" service-name
 Specifies Service-Name to respond. If absent any Service-Name is acceptable and client's Service-Name will be sent back.
+.TP
+.BI "accept-any-service=" n
+If service-name specified still will answer with service names, but accepts any service name in PADR request. Useful 
+for scenarios, where selection of PPPoE done by client, based on service names in PADO.
 .TP
 .BI "pado-delay=" delay[,delay1:count1[,delay2:count2[,...]]]
 Specifies delays (also in condition of connection count) to send PADO (ms).
@@ -516,6 +549,11 @@ Specifies whether to handle TR101 tags.
 Specifies overall limit of PADI packets to reply in 1 second period (default 0 - unlimited). Rate of per-mac PADI packets is limited to no more than 1 packet per second.
 .TP
 .BI "mppe=" deny|allow|prefer|require
+.TP
+.BI "ifname=" ifname
+If this option is given ppp interface will be renamed using
+.B ifname
+as a template, i.e pppoe%d => pppoe0.
 .SH [l2tp]
 .br
 Configuration of L2TP module.
@@ -566,7 +604,6 @@ is greater of zero then l2tp module will produce verbose logging.
 .TP
 .BI "mppe=" deny|allow|prefer|require
 .TP
-.TP
 .BI "secret=" string
 Specifies secret to connect to server.
 .TP
@@ -603,6 +640,114 @@ reply (SCCRP). Default value is 0.
 .BI "ppp-max-mtu=" n
 Set the maximun MTU value that can be negociated for PPP over L2TP
 sessions. Default value is 1420.
+.TP
+.BI "ifname=" ifname
+If this option is given ppp interface will be renamed using
+.B ifname
+as a template, i.e l2tp%d => l2tp0.
+.SH [sstp]
+.br
+Configuration of SSTP module.
+.TP
+.BI "bind=" x.x.x.x|ipv6address|unix:pathname|unix:@abstract
+If this option is given then sstp server will bind to specified IP address
+or unix pathname/abstract socket.
+.TP
+.BI "port=" n
+If this option is given then sstp server will bind to specified port.
+Default is 443.
+.TP
+.BI "verbose=" n
+If this option is given and 
+.B n
+is greater of zero then sstp module will produce verbose logging.
+.TP
+.BI "timeout=" n
+Timeout waiting reply from client in seconds.
+Default is 60.
+.TP
+.BI "hello-interval=" n
+If this option is given and greater then zero then sstp will send echo-request every 
+.B n
+seconds and drop connection without a reply.
+Default is 60.
+.TP
+.BI "accept=" ssl,proxy
+Specifies incoming connection acceptance mode.
+.br
+.B ssl
+- enable SSL/TLS support.
+.br
+.B proxy
+- enable PROXY protocol 1 & 2 support.
+.TP
+.BI "ssl-dhparam=" pemfile
+Specifies a file with DH parameters for DHE ciphers.
+.TP
+.BI "ssl-ecdh-curve=" string
+Specifies a curves for ECDHE ciphers. Value is specified in the format understood by the OpenSSL library.
+.TP
+.BI "ssl-ciphers=" string
+Specifies the enabled ciphers. The ciphers are specified in the format understood by the OpenSSL library.
+.TP
+.BI "ssl-prefer-server-ciphers=" n
+If this option is given and 
+.B n
+is greater of zero then server ciphers should be preferred over client ciphers.
+Default is 0.
+.TP
+.BI "ssl-pemfile=" pemfile
+Specifies a file with the certificate in the PEM format for sstp server.
+Certificate is also used to compute initial SHA1 and SHA256 certificate hash.
+.TP
+.BI "ssl-keyfile=" keyfile
+Specifies a file with the secret key in the PEM format for sstp server.
+If not set, secret key will be loaded from the
+.BI pemfile
+certificate.
+.TP
+.BI "cert-hash-proto=" sha1,sha256
+Specifies hashing methods that can be used to compute the Compound MAC in the Crypto Binding attribute.
+Default is sha1 and sha256 both.
+.TP
+.BI "cert-hash-sha1=" hexstring
+Given hexadecimal value overrides SHA1 hash computed from the
+.BI pemfile
+certificate or used directly for non-ssl mode.
+.TP
+.BI "cert-hash-sha256=" hexstring
+Given hexadecimal value overrides SHA256 hash computed from the
+.BI pemfile
+certificate or used directly for non-ssl mode.
+.TP
+.BI "host-name=" string
+If this option is given, only sstp connection to specified host and with the same TLS SNI will be allowed.
+.TP
+.BI "http-error=" deny|allow|http[s]://host.tld[/path]
+Specify http layer error behavior for non-sstp requests.
+.br
+.B deny
+- reset connection without any error response.
+.br
+.B allow
+- respond with http-specific status codes.
+.br
+.B http[s]://host.tld[/path]
+- respond with http redirect to the specified location.
+If
+.B /path
+is not specified, requested uri will be appended automatically
+.br
+Default value is allow.
+.TP
+.BI "ifname=" ifname
+If this option is given ppp interface will be renamed using
+.B ifname
+as a template, i.e sstp%d => sstp0.
+.TP
+.BI "ppp-max-mtu=" n
+Set the maximun MTU value that can be negociated for PPP over SSTP sessions.
+Default value is 1452, maximum is 4087.
 .SH [radius]
 .br
 Configuration of RADIUS module.
@@ -810,20 +955,20 @@ Specifies whether to shuffle initial address list.
 .BI "gw=" range
 Specifies range of local address of ppp interfaces if form:
 .br
-.B x.x.x.x/mask[,name=pool_name]
+.B x.x.x.x/mask[,name=pool_name][,next=next_pool_name]
 (for example 10.0.0.0/8)
 .br
-.B x.x.x.x-y[,name=pool_name]
+.B x.x.x.x-y[,name=pool_name][,next=next_pool_name]
 (for example 10.0.0.1-254)
 .TP
 .BI "tunnel=" range
 Specifies range of remote address of ppp interfaces if form:
 .br
-.B x.x.x.x/mask[,name=pool_name]
+.B x.x.x.x/mask[,name=pool_name][,next=next_pool_name]
 .br
-.B x.x.x.x-y[,name=pool_name]
+.B x.x.x.x-y[,name=pool_name][,next=next_pool_name]
 .TP
-.BI "x.x.x.x/mask[,name=pool_name] or x.x.x.x-y[,name=pool_name]"
+.BI "x.x.x.x/mask[,name=pool_name][,next=next_pool_name] or x.x.x.x-y[,name=pool_name][,next=next_pool_name]"
 Also specifies range of remote address of ppp interfaces.
 .TP
 .BI "attr=" attribute
@@ -853,6 +998,8 @@ fc00:0:1:ffff::/64
 .BI "delegate=" ipv6prefix/mask,prefix_len
 Specifies range of prefixes to delegate to clients through DHCPv6 prefix delegation (rfc3633).
 Format is same as described above.
+.BI "gw-ip6-address=" ipv6address
+Specifies gateway address (used only for /128 prefixes)
 .SH [connlimit]
 .br
 This module limits connection rate from single source.

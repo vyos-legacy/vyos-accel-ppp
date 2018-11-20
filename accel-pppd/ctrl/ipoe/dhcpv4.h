@@ -32,6 +32,8 @@
 #define DHCPRELEASE  7
 #define DHCPINFORM   8
 
+#define ACCEL_PPP_MAGIC 0xfd56b60a
+
 struct dhcpv4_hdr {
 	uint8_t op;
 	uint8_t htype;
@@ -101,6 +103,7 @@ struct dhcpv4_relay {
 };
 
 struct ap_session;
+struct rad_packet_t;
 
 struct dhcpv4_serv *dhcpv4_create(struct triton_context_t *ctx, const char *ifname, const char *opt);
 void dhcpv4_free(struct dhcpv4_serv *);
@@ -116,10 +119,13 @@ int dhcpv4_relay_send_release(struct dhcpv4_relay *relay, uint8_t *chaddr, uint3
 int dhcpv4_send_reply(int msg_type, struct dhcpv4_serv *serv, struct dhcpv4_packet *req, uint32_t yiaddr, uint32_t siaddr, uint32_t router, uint32_t mask, int lease_time, int renew_time, struct dhcpv4_packet *relay_reply);
 int dhcpv4_send_nak(struct dhcpv4_serv *serv, struct dhcpv4_packet *req);
 
+void dhcpv4_send_notify(struct dhcpv4_serv *serv, struct dhcpv4_packet *req, unsigned int weight);
+
 void dhcpv4_packet_ref(struct dhcpv4_packet *pack);
 struct dhcpv4_option *dhcpv4_packet_find_opt(struct dhcpv4_packet *pack, int type);
 int dhcpv4_packet_insert_opt82(struct dhcpv4_packet *pack, const char *agent_circuit_id, const char *agent_remote_id);
 void dhcpv4_packet_free(struct dhcpv4_packet *pack);
+struct dhcpv4_packet *dhcpv4_clone_radius(struct rad_packet_t *);
 
 int dhcpv4_check_options(struct dhcpv4_packet *);
 void dhcpv4_print_options(struct dhcpv4_packet *, void (*)(const char *, ...));

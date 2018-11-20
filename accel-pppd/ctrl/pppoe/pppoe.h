@@ -70,7 +70,7 @@ struct pppoe_serv_t
 	struct triton_context_t ctx;
 	struct rb_node node;
 
-	const struct ap_net *net;
+	struct ap_net *net;
 	int disc_sock;
 
 	uint8_t hwaddr[ETH_ALEN];
@@ -102,7 +102,8 @@ struct pppoe_serv_t
 };
 
 extern int conf_verbose;
-extern char *conf_service_name;
+extern char *conf_service_name[255];
+extern int conf_accept_any_service;
 extern char *conf_ac_name;
 extern char *conf_pado_delay;
 

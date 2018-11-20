@@ -20,6 +20,7 @@
 
 #include "libnetlink.h"
 #include "iputils.h"
+#include "ap_net.h"
 
 #ifdef ACCEL_DP
 #define _malloc(x) malloc(x)
@@ -36,45 +37,6 @@ struct arg
 	iplink_list_func func;
 	void *arg;
 };
-
-static pthread_key_t rth_key;
-static __thread struct rtnl_handle *rth;
-
-static void open_rth(void)
-{
-	rth = _malloc(sizeof(*rth));
-
-	if (!rth)
-		return;
-
-	memset(rth, 0, sizeof(*rth));
-
-	if (rtnl_open(rth, 0)) {
-		log_ppp_error("radius: cannot open rtnetlink\n");
-		_free(rth);
-		rth = NULL;
-		return;
-	}
-
-	pthread_setspecific(rth_key, rth);
-}
-
-static void free_rth(void *arg)
-{
-	struct rtnl_handle *rth = arg;
-
-	rtnl_close(rth);
-
-	_free(rth);
-}
-
-struct rtnl_handle __export *iputils_get_handle()
-{
-	if (!rth)
-		open_rth();
-
-	return rth;
-}
 
 static int store_nlmsg(const struct sockaddr_nl *who, struct nlmsghdr *n, void *arg)
 {
@@ -151,9 +113,8 @@ int __export iplink_get_stats(int ifindex, struct rtnl_link_stats *stats)
 	struct ifinfomsg *ifi;
 	int len;
 	struct rtattr *tb[IFLA_MAX + 1];
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = -1;
 
 	if (!rth)
 		return -1;
@@ -167,10 +128,10 @@ int __export iplink_get_stats(int ifindex, struct rtnl_link_stats *stats)
 	req.i.ifi_index = ifindex;
 
 	if (rtnl_talk(rth, &req.n, 0, 0, &req.n, NULL, NULL, 0) < 0)
-		return -1;
+		goto out;
 
 	if (req.n.nlmsg_type != RTM_NEWLINK)
-		return -1;
+		goto out;
 
 	ifi = NLMSG_DATA(&req.n);
 
@@ -178,15 +139,48 @@ int __export iplink_get_stats(int ifindex, struct rtnl_link_stats *stats)
 
 	len -= NLMSG_LENGTH(sizeof(*ifi));
 	if (len < 0)
-		return -1;
+		goto out;
 
 	parse_rtattr(tb, IFLA_MAX, IFLA_RTA(ifi), len);
-	if (tb[IFLA_STATS])
+	if (tb[IFLA_STATS]) {
 		memcpy(stats, RTA_DATA(tb[IFLA_STATS]), sizeof(*stats));
-	else
+		r = 0;
+	}
+
+out:
+	net->rtnl_put(rth);
+
+	return r;
+}
+
+int __export iplink_set_mtu(int ifindex, int mtu)
+{
+	struct iplink_req {
+		struct nlmsghdr n;
+		struct ifinfomsg i;
+		char buf[1024];
+	} req;
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r;
+
+	if (!rth)
 		return -1;
 
-	return 0;
+	memset(&req, 0, sizeof(req) - 1024);
+
+	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+	req.n.nlmsg_type = RTM_SETLINK;
+	req.i.ifi_family = AF_UNSPEC;
+	req.i.ifi_index = ifindex;
+
+	addattr_l(&req.n, 1024, IFLA_MTU, &mtu, 4);
+
+	r = rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0);
+
+	net->rtnl_put(rth);
+
+	return r;
 }
 
 int __export iplink_vlan_add(const char *ifname, int ifindex, int vid)
@@ -197,9 +191,8 @@ int __export iplink_vlan_add(const char *ifname, int ifindex, int vid)
 		char buf[4096];
 	} req;
 	struct rtattr *linkinfo, *data;
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -226,9 +219,11 @@ int __export iplink_vlan_add(const char *ifname, int ifindex, int vid)
 	linkinfo->rta_len = (void *)NLMSG_TAIL(&req.n) - (void *)linkinfo;
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
-		return -1;
+		r = -1;
 
-	return 0;
+	net->rtnl_put(rth);
+
+	return r;
 }
 
 int __export iplink_vlan_del(int ifindex)
@@ -239,9 +234,8 @@ int __export iplink_vlan_del(int ifindex)
 		char buf[4096];
 	} req;
 	struct rtattr *linkinfo;
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -265,9 +259,11 @@ int __export iplink_vlan_del(int ifindex)
 	linkinfo->rta_len = (void *)NLMSG_TAIL(&req.n) - (void *)linkinfo;
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
-		return -1;
+		r = -1;
 
-	return 0;
+	net->rtnl_put(rth);
+
+	return r;
 }
 
 int __export iplink_vlan_get_vid(int ifindex, int *iflink)
@@ -280,9 +276,8 @@ int __export iplink_vlan_get_vid(int ifindex, int *iflink)
 	struct ifinfomsg *ifi;
 	int len;
 	struct rtattr *tb[IFLA_MAX + 1];
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -296,10 +291,10 @@ int __export iplink_vlan_get_vid(int ifindex, int *iflink)
 	req.i.ifi_index = ifindex;
 
 	if (rtnl_talk(rth, &req.n, 0, 0, &req.n, NULL, NULL, 0) < 0)
-		return -1;
+		goto out;
 
 	if (req.n.nlmsg_type != RTM_NEWLINK)
-		return -1;
+		goto out;
 
 	ifi = NLMSG_DATA(&req.n);
 
@@ -307,12 +302,12 @@ int __export iplink_vlan_get_vid(int ifindex, int *iflink)
 
 	len -= NLMSG_LENGTH(sizeof(*ifi));
 	if (len < 0)
-		return -1;
+		goto out;
 
 	parse_rtattr(tb, IFLA_MAX, IFLA_RTA(ifi), len);
 
 	if (!tb[IFLA_LINKINFO])
-		return 0;
+		goto out;
 
 	if (iflink && tb[IFLA_LINK])
 		*iflink = *(int *)RTA_DATA(tb[IFLA_LINK]);
@@ -320,10 +315,15 @@ int __export iplink_vlan_get_vid(int ifindex, int *iflink)
 	parse_rtattr_nested(tb, IFLA_MAX, tb[IFLA_LINKINFO]);
 
 	if (strcmp(RTA_DATA(tb[IFLA_INFO_KIND]), "vlan"))
-		return 0;
+		goto out;
 
 	parse_rtattr_nested(tb, IFLA_MAX, tb[IFLA_INFO_DATA]);
-	return *(uint16_t *)RTA_DATA(tb[IFLA_VLAN_ID]);
+	r = *(uint16_t *)RTA_DATA(tb[IFLA_VLAN_ID]);
+
+out:
+	net->rtnl_put(rth);
+
+	return r;
 }
 
 
@@ -334,9 +334,8 @@ int __export ipaddr_add(int ifindex, in_addr_t addr, int mask)
 		struct ifaddrmsg i;
 		char buf[4096];
 	} req;
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -353,21 +352,22 @@ int __export ipaddr_add(int ifindex, in_addr_t addr, int mask)
 	addattr32(&req.n, sizeof(req), IFA_LOCAL, addr);
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
-		return -1;
+		r = -1;
 
-	return 0;
+	net->rtnl_put(rth);
+
+	return r;
 }
 
-int __export ipaddr_add_peer(int ifindex, in_addr_t addr, int mask, in_addr_t peer_addr)
+int __export ipaddr_add_peer(int ifindex, in_addr_t addr, in_addr_t peer_addr)
 {
 	struct ipaddr_req {
 		struct nlmsghdr n;
 		struct ifaddrmsg i;
 		char buf[4096];
 	} req;
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -379,15 +379,17 @@ int __export ipaddr_add_peer(int ifindex, in_addr_t addr, int mask, in_addr_t pe
 	req.n.nlmsg_type = RTM_NEWADDR;
 	req.i.ifa_family = AF_INET;
 	req.i.ifa_index = ifindex;
-	req.i.ifa_prefixlen = mask;
+	req.i.ifa_prefixlen = 32;
 
 	addattr32(&req.n, sizeof(req), IFA_LOCAL, addr);
 	addattr32(&req.n, sizeof(req), IFA_ADDRESS, peer_addr);
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
-		return -1;
+		r = -1;
 
-	return 0;
+	net->rtnl_put(rth);
+
+	return r;
 }
 
 int __export ipaddr_del(int ifindex, in_addr_t addr, int mask)
@@ -397,9 +399,8 @@ int __export ipaddr_del(int ifindex, in_addr_t addr, int mask)
 		struct ifaddrmsg i;
 		char buf[4096];
 	} req;
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -416,21 +417,55 @@ int __export ipaddr_del(int ifindex, in_addr_t addr, int mask)
 	addattr32(&req.n, sizeof(req), IFA_LOCAL, addr);
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
-		return -1;
+		r = -1;
 
-	return 0;
+	net->rtnl_put(rth);
+
+	return r;
 }
 
-int __export iproute_add(int ifindex, in_addr_t src, in_addr_t dst, in_addr_t gw, int proto, int mask)
+int __export ipaddr_del_peer(int ifindex, in_addr_t addr, in_addr_t peer)
+{
+	struct ipaddr_req {
+		struct nlmsghdr n;
+		struct ifaddrmsg i;
+		char buf[4096];
+	} req;
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
+
+	if (!rth)
+		return -1;
+
+	memset(&req, 0, sizeof(req) - 4096);
+
+	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+	req.n.nlmsg_flags = NLM_F_REQUEST;
+	req.n.nlmsg_type = RTM_DELADDR;
+	req.i.ifa_family = AF_INET;
+	req.i.ifa_index = ifindex;
+	req.i.ifa_prefixlen = 32;
+
+	addattr32(&req.n, sizeof(req), IFA_LOCAL, addr);
+	addattr32(&req.n, sizeof(req), IFA_ADDRESS, peer);
+
+	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
+		r = -1;
+
+	net->rtnl_put(rth);
+
+	return r;
+}
+
+int __export iproute_add(int ifindex, in_addr_t src, in_addr_t dst, in_addr_t gw, int proto, int mask, uint32_t prio)
 {
 	struct ipaddr_req {
 		struct nlmsghdr n;
 		struct rtmsg i;
 		char buf[4096];
 	} req;
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -453,24 +488,27 @@ int __export iproute_add(int ifindex, in_addr_t src, in_addr_t dst, in_addr_t gw
 		addattr32(&req.n, sizeof(req), RTA_PREFSRC, src);
 	if (gw)
 		addattr32(&req.n, sizeof(req), RTA_GATEWAY, gw);
+	if (prio)
+		addattr32(&req.n, sizeof(req), RTA_PRIORITY, prio);
 	addattr32(&req.n, sizeof(req), RTA_DST, dst);
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
-		return -1;
+		r = -1;
 
-	return 0;
+	net->rtnl_put(rth);
+
+	return r;
 }
 
-int __export iproute_del(int ifindex, in_addr_t dst, int proto, int mask)
+int __export iproute_del(int ifindex, in_addr_t dst, int proto, int mask, uint32_t prio)
 {
 	struct ipaddr_req {
 		struct nlmsghdr n;
 		struct rtmsg i;
 		char buf[4096];
 	} req;
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -491,11 +529,15 @@ int __export iproute_del(int ifindex, in_addr_t dst, int proto, int mask)
 
 	if (ifindex)
 		addattr32(&req.n, sizeof(req), RTA_OIF, ifindex);
+	if (prio)
+		addattr32(&req.n, sizeof(req), RTA_PRIORITY, prio);
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
-		return -1;
+		r = -1;
 
-	return 0;
+	net->rtnl_put(rth);
+
+	return r;
 }
 
 int __export ip6route_add(int ifindex, struct in6_addr *dst, int pref_len, int proto)
@@ -505,9 +547,8 @@ int __export ip6route_add(int ifindex, struct in6_addr *dst, int pref_len, int p
 		struct rtmsg i;
 		char buf[4096];
 	} req;
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -519,7 +560,7 @@ int __export ip6route_add(int ifindex, struct in6_addr *dst, int pref_len, int p
 	req.n.nlmsg_type = RTM_NEWROUTE;
 	req.i.rtm_family = AF_INET6;
 	req.i.rtm_table = RT_TABLE_MAIN;
-	req.i.rtm_scope = RT_SCOPE_LINK;
+	req.i.rtm_scope = (pref_len == 128) ? RT_SCOPE_HOST : RT_SCOPE_LINK;
 	req.i.rtm_protocol = proto;
 	req.i.rtm_type = RTN_UNICAST;
 	req.i.rtm_dst_len = pref_len;
@@ -528,9 +569,11 @@ int __export ip6route_add(int ifindex, struct in6_addr *dst, int pref_len, int p
 	addattr32(&req.n, sizeof(req), RTA_OIF, ifindex);
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
-		return -1;
+		r = -1;
 
-	return 0;
+	net->rtnl_put(rth);
+
+	return r;
 }
 
 int __export ip6route_del(int ifindex, struct in6_addr *dst, int pref_len)
@@ -540,9 +583,8 @@ int __export ip6route_del(int ifindex, struct in6_addr *dst, int pref_len)
 		struct rtmsg i;
 		char buf[4096];
 	} req;
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -554,16 +596,18 @@ int __export ip6route_del(int ifindex, struct in6_addr *dst, int pref_len)
 	req.n.nlmsg_type = RTM_DELROUTE;
 	req.i.rtm_family = AF_INET6;
 	req.i.rtm_table = RT_TABLE_MAIN;
-	req.i.rtm_scope = RT_SCOPE_LINK;
+	req.i.rtm_scope = (pref_len == 128) ? RT_SCOPE_HOST : RT_SCOPE_LINK;
 	req.i.rtm_type = RTN_UNICAST;
 	req.i.rtm_dst_len = pref_len;
 
 	addattr_l(&req.n, sizeof(req), RTA_DST, dst, sizeof(*dst));
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
-		return -1;
+		r = -1;
 
-	return 0;
+	net->rtnl_put(rth);
+
+	return r;
 }
 
 int __export ip6addr_add(int ifindex, struct in6_addr *addr, int prefix_len)
@@ -573,9 +617,8 @@ int __export ip6addr_add(int ifindex, struct in6_addr *addr, int prefix_len)
 		struct ifaddrmsg i;
 		char buf[4096];
 	} req;
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -593,9 +636,45 @@ int __export ip6addr_add(int ifindex, struct in6_addr *addr, int prefix_len)
 	addattr_l(&req.n, sizeof(req), IFA_ADDRESS, addr, 16);
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
+		r = -1;
+
+	net->rtnl_put(rth);
+
+	return r;
+}
+
+int __export ip6addr_add_peer(int ifindex, struct in6_addr *addr, struct in6_addr *peer)
+{
+	struct ipaddr_req {
+		struct nlmsghdr n;
+		struct ifaddrmsg i;
+		char buf[4096];
+	} req;
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
+
+	if (!rth)
 		return -1;
 
-	return 0;
+	memset(&req, 0, sizeof(req) - 4096);
+
+	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE;
+	req.n.nlmsg_type = RTM_NEWADDR;
+	req.i.ifa_family = AF_INET6;
+	req.i.ifa_index = ifindex;
+	req.i.ifa_prefixlen = 128;
+	req.i.ifa_flags = IFA_F_NODAD;
+
+	addattr_l(&req.n, sizeof(req), IFA_LOCAL, addr, 16);
+	addattr_l(&req.n, sizeof(req), IFA_ADDRESS, peer, 16);
+
+	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
+		r = -1;
+
+	net->rtnl_put(rth);
+
+	return r;
 }
 
 int __export ip6addr_del(int ifindex, struct in6_addr *addr, int prefix_len)
@@ -605,9 +684,8 @@ int __export ip6addr_del(int ifindex, struct in6_addr *addr, int prefix_len)
 		struct ifaddrmsg i;
 		char buf[4096];
 	} req;
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -624,9 +702,11 @@ int __export ip6addr_del(int ifindex, struct in6_addr *addr, int prefix_len)
 	addattr_l(&req.n, sizeof(req), IFA_ADDRESS, addr, 16);
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
-		return -1;
+		r = -1;
 
-	return 0;
+	net->rtnl_put(rth);
+
+	return r;
 }
 
 in_addr_t __export iproute_get(in_addr_t dst, in_addr_t *gw)
@@ -640,12 +720,10 @@ in_addr_t __export iproute_get(in_addr_t dst, in_addr_t *gw)
 	struct rtattr *tb[RTA_MAX+1];
 	int len;
 	in_addr_t res = 0;
+	struct rtnl_handle *rth = net->rtnl_get();
 
 	if (gw)
 		*gw = 0;
-
-	if (!rth)
-		open_rth();
 
 	if (!rth)
 		return -1;
@@ -694,6 +772,8 @@ in_addr_t __export iproute_get(in_addr_t dst, in_addr_t *gw)
 		*gw = *(uint32_t *)RTA_DATA(tb[RTA_GATEWAY]);
 
 out:
+	net->rtnl_put(rth);
+
 	return res;
 }
 
@@ -704,9 +784,8 @@ int __export iprule_add(uint32_t addr, int table)
 		struct rtmsg i;
 		char buf[4096];
 	} req;
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -728,9 +807,11 @@ int __export iprule_add(uint32_t addr, int table)
 		addattr32(&req.n, sizeof(req), FRA_TABLE, table);
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
-		return -1;
+		r = -1;
 
-	return 0;
+	net->rtnl_put(rth);
+
+	return r;
 }
 
 int __export iprule_del(uint32_t addr, int table)
@@ -740,9 +821,8 @@ int __export iprule_del(uint32_t addr, int table)
 		struct rtmsg i;
 		char buf[4096];
 	} req;
-
-	if (!rth)
-		open_rth();
+	struct rtnl_handle *rth = net->rtnl_get();
+	int r = 0;
 
 	if (!rth)
 		return -1;
@@ -764,15 +844,9 @@ int __export iprule_del(uint32_t addr, int table)
 		addattr32(&req.n, sizeof(req), FRA_TABLE, table);
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
-		return -1;
+		r = -1;
 
-	return 0;
+	net->rtnl_put(rth);
+
+	return r;
 }
-
-
-static void init(void)
-{
-	pthread_key_create(&rth_key, free_rth);
-}
-
-DEFINE_INIT(100, init);

@@ -7,6 +7,7 @@
 #include <linux/if_link.h>
 #include <linux/if_addr.h>
 #include <linux/neighbour.h>
+#include <sys/types.h>
 
 #define TCA_BUF_MAX 64*1024
 #define MAX_MSG 16384
@@ -75,8 +76,6 @@ extern int __parse_rtattr_nested_compat(struct rtattr *tb[], int max, struct rta
 	__parse_rtattr_nested_compat(tb, max, rta, len); })
 
 extern int rtnl_listen(struct rtnl_handle *, rtnl_filter_t handler,
-		       void *jarg);
-extern int rtnl_from_file(FILE *, rtnl_filter_t handler,
 		       void *jarg);
 
 #define NLMSG_TAIL(nmsg) \

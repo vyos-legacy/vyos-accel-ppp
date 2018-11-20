@@ -2,6 +2,9 @@
 #define __BACKUP_H
 
 #include <stdint.h>
+#include <sys/types.h>
+
+#include "ap_session.h"
 #include "list.h"
 
 #define MODID_COMMON  1
@@ -12,8 +15,6 @@
 #define MODID_L2TP    6
 #define MODID_IPPOOL  7
 
-
-struct ap_session;
 struct backup_storage;
 struct backup_data;
 
@@ -21,7 +22,7 @@ struct backup_tag
 {
 	struct list_head entry;
 	uint16_t internal:1;
-	uint8_t id;
+	uint16_t id:15;
 	uint16_t size;
 	uint8_t *data;
 };

@@ -188,9 +188,24 @@ int rad_packet_recv(int fd, struct rad_packet_t **p, struct sockaddr_in *addr)
 			vendor = rad_dict_find_vendor_id(vendor_id);
 			if (vendor) {
 				ptr += 4;
-				id = *ptr; ptr++;
-				len = *ptr - 2; ptr++;
-				n -= 2 + 4;
+
+				if (vendor->tag == 2)
+					id = (uint16_t)ntohs(*(uint16_t *)ptr);
+				else
+					id = *ptr;
+
+				ptr += vendor->tag;
+
+				if (vendor->len == 2)
+					len = (uint16_t)ntohs(*(uint16_t *)ptr);
+				else
+					len = *ptr;
+
+				ptr += vendor->len;
+
+				len -= vendor->tag + vendor->len;
+
+				n -= 4 + vendor->tag + vendor->len;
 			} else
 				log_ppp_warn("radius:packet: vendor %i not found\n", id);
 		} else
@@ -206,40 +221,43 @@ int rad_packet_recv(int fd, struct rad_packet_t **p, struct sockaddr_in *addr)
 			attr->vendor = vendor;
 			attr->attr = da;
 			attr->len = len;
-			switch (da->type) {
-				case ATTR_TYPE_STRING:
-					attr->val.string = _malloc(len+1);
-					if (!attr->val.string) {
-						log_emerg("radius:packet: out of memory\n");
-						_free(attr);
-						goto out_err;
-					}
-					memcpy(attr->val.string, ptr, len);
-					attr->val.string[len] = 0;
-					break;
-				case ATTR_TYPE_OCTETS:
-					attr->val.octets = _malloc(len);
-					if (!attr->val.octets) {
-						log_emerg("radius:packet: out of memory\n");
-						_free(attr);
-						goto out_err;
-					}
-					memcpy(attr->val.octets, ptr, len);
-					break;
-				case ATTR_TYPE_DATE:
-				case ATTR_TYPE_INTEGER:
-					attr->val.integer = ntohl(*(uint32_t*)ptr);
-					break;
-				case ATTR_TYPE_IPADDR:
-				case ATTR_TYPE_IFID:
-				case ATTR_TYPE_IPV6ADDR:
-					memcpy(&attr->val.integer, ptr, len);
-					break;
-				case ATTR_TYPE_IPV6PREFIX:
-					attr->val.ipv6prefix.len = ptr[1];
-					memset(&attr->val.ipv6prefix.prefix, 0, sizeof(attr->val.ipv6prefix.prefix));
-					memcpy(&attr->val.ipv6prefix.prefix, ptr + 2, len - 2);
-					break;
+			attr->raw = ptr;
+
+			if (!da->array) {
+				switch (da->type) {
+					case ATTR_TYPE_STRING:
+						attr->alloc = 1;
+						attr->val.string = _malloc(len + 1);
+						memcpy(attr->val.string, ptr, len);
+						attr->val.string[len] = 0;
+						break;
+					case ATTR_TYPE_OCTETS:
+					case ATTR_TYPE_ETHER:
+					case ATTR_TYPE_TLV:
+						attr->val.octets = ptr;
+						break;
+					case ATTR_TYPE_INTEGER:
+						if (len != da->size)
+							log_ppp_warn("radius:packet: attribute %s has invalid length %i (must be %i)\n", da->name, len, da->size);
+					case ATTR_TYPE_DATE:
+						if (len == 4)
+							attr->val.integer = ntohl(*(uint32_t*)ptr);
+						else if (len == 2)
+							attr->val.integer = ntohs(*(uint16_t*)ptr);
+						else if (len == 1)
+							attr->val.integer = *ptr;
+						break;
+					case ATTR_TYPE_IPADDR:
+					case ATTR_TYPE_IFID:
+					case ATTR_TYPE_IPV6ADDR:
+						memcpy(&attr->val.integer, ptr, len);
+						break;
+					case ATTR_TYPE_IPV6PREFIX:
+						attr->val.ipv6prefix.len = ptr[1];
+						memset(&attr->val.ipv6prefix.prefix, 0, sizeof(attr->val.ipv6prefix.prefix));
+						memcpy(&attr->val.ipv6prefix.prefix, ptr + 2, len - 2);
+						break;
+				}
 			}
 			list_add_tail(&attr->entry, &pack->attrs);
 		} else
@@ -268,12 +286,19 @@ void rad_packet_free(struct rad_packet_t *pack)
 	while(!list_empty(&pack->attrs)) {
 		attr = list_entry(pack->attrs.next, typeof(*attr), entry);
 		list_del(&attr->entry);
-		if (attr->attr->type == ATTR_TYPE_STRING || attr->attr->type == ATTR_TYPE_OCTETS)
+		if (attr->alloc)
 			_free(attr->val.string);
 		mempool_free(attr);
 	}
 
 	mempool_free(pack);
+}
+
+static void print_octets(uint8_t *raw, int len, void (*print)(const char *fmt, ...))
+{
+	print(" 0x");
+	while (len--)
+		print("%02x", *raw++);
 }
 
 void rad_packet_print(struct rad_packet_t *pack, struct rad_server_t *s, void (*print)(const char *fmt, ...))
@@ -291,6 +316,7 @@ void rad_packet_print(struct rad_packet_t *pack, struct rad_server_t *s, void (*
 		print("[RADIUS(%i) ", s->id);
 	else
 		print("[RADIUS ");
+
 	switch(pack->code) {
 		case CODE_ACCESS_REQUEST:
 			print("Access-Request");
@@ -331,43 +357,50 @@ void rad_packet_print(struct rad_packet_t *pack, struct rad_server_t *s, void (*
 		default:
 			print("Unknown (%i)", pack->code);
 	}
+
 	print(" id=%x", pack->id);
 
 	list_for_each_entry(attr, &pack->attrs, entry) {
-		if (attr->vendor)
-			print("<%s %s ", attr->vendor->name, attr->attr->name);
-		else
-			print(" <%s ", attr->attr->name);
-		switch (attr->attr->type) {
-			case ATTR_TYPE_INTEGER:
-				val = rad_dict_find_val(attr->attr, attr->val);
-				if (val)
-					print("%s", val->name);
-				else
-					print("%u", attr->val.integer);
-				break;
-			case ATTR_TYPE_STRING:
-				print("\"%s\"", attr->val.string);
-				break;
-			case ATTR_TYPE_IPADDR:
-				addr = ntohl(attr->val.ipaddr);
-				print("%i.%i.%i.%i", (addr >> 24) & 0xff, (addr >> 16) & 0xff, (addr >> 8) & 0xff, addr & 0xff);
-				break;
-			case ATTR_TYPE_IFID:
-				ifid_u.ifid = attr->val.ifid;
-				print("%x:%x:%x:%x", ntohs(ifid_u.u16[0]), ntohs(ifid_u.u16[1]), ntohs(ifid_u.u16[2]), ntohs(ifid_u.u16[3]));
-				break;
-			case ATTR_TYPE_IPV6ADDR:
-				inet_ntop(AF_INET6, &attr->val.ipv6addr, ip_str, sizeof(ip_str));
-				print("%s", ip_str);
-				break;
-			case ATTR_TYPE_IPV6PREFIX:
-				inet_ntop(AF_INET6, &attr->val.ipv6prefix.prefix, ip_str, sizeof(ip_str));
-				print("%s/%i", ip_str, attr->val.ipv6prefix.len);
-				break;
+		print(" <%s", attr->attr->name);
+
+		if (attr->attr->array)
+			print_octets(attr->raw, attr->len, print);
+		else {
+			switch (attr->attr->type) {
+				case ATTR_TYPE_INTEGER:
+					val = rad_dict_find_val(attr->attr, attr->val);
+					if (val)
+						print(" %s", val->name);
+					else
+						print(" %u", attr->val.integer);
+					break;
+				case ATTR_TYPE_STRING:
+					print(" \"%s\"", attr->val.string);
+					break;
+				case ATTR_TYPE_IPADDR:
+					addr = ntohl(attr->val.ipaddr);
+					print(" %i.%i.%i.%i", (addr >> 24) & 0xff, (addr >> 16) & 0xff, (addr >> 8) & 0xff, addr & 0xff);
+					break;
+				case ATTR_TYPE_IFID:
+					ifid_u.ifid = attr->val.ifid;
+					print(" %x:%x:%x:%x", ntohs(ifid_u.u16[0]), ntohs(ifid_u.u16[1]), ntohs(ifid_u.u16[2]), ntohs(ifid_u.u16[3]));
+					break;
+				case ATTR_TYPE_IPV6ADDR:
+					inet_ntop(AF_INET6, &attr->val.ipv6addr, ip_str, sizeof(ip_str));
+					print(" %s", ip_str);
+					break;
+				case ATTR_TYPE_IPV6PREFIX:
+					inet_ntop(AF_INET6, &attr->val.ipv6prefix.prefix, ip_str, sizeof(ip_str));
+					print(" %s/%i", ip_str, attr->val.ipv6prefix.len);
+					break;
+				default:
+					print_octets(attr->raw, attr->len, print);
+			}
 		}
+
 		print(">");
 	}
+
 	print("]\n");
 }
 
@@ -402,6 +435,7 @@ int __export rad_packet_add_int(struct rad_packet_t *pack, const char *vendor_na
 	ra->attr = attr;
 	ra->len = 4;
 	ra->val.integer = val;
+	ra->raw = &ra->val;
 	list_add_tail(&ra->entry, &pack->attrs);
 	pack->len += (vendor_name ? 8 : 2) + 4;
 
@@ -455,6 +489,7 @@ int __export rad_packet_add_octets(struct rad_packet_t *pack, const char *vendor
 	ra->len = len;
 
 	if (len) {
+		ra->alloc = 1;
 		ra->val.octets = _malloc(len);
 		if (!ra->val.octets) {
 			log_emerg("radius: out of memory\n");
@@ -463,6 +498,8 @@ int __export rad_packet_add_octets(struct rad_packet_t *pack, const char *vendor
 		}
 		memcpy(ra->val.octets, val, len);
 	}
+
+	ra->raw = ra->val.octets;
 
 	list_add_tail(&ra->entry, &pack->attrs);
 	pack->len += (vendor_name ? 8 : 2) + len;
@@ -487,6 +524,8 @@ int __export rad_packet_change_octets(struct rad_packet_t *pack, const char *ven
 			log_emerg("radius: out of memory\n");
 			return -1;
 		}
+
+		ra->raw = ra->val.octets;
 
 		pack->len += len - ra->len;
 		ra->len = len;
@@ -532,6 +571,7 @@ int __export rad_packet_add_str(struct rad_packet_t *pack, const char *vendor_na
 	ra->vendor = vendor;
 	ra->attr = attr;
 	ra->len = len;
+	ra->alloc = 1;
 	ra->val.string = _malloc(len + 1);
 	if (!ra->val.string) {
 		log_emerg("radius: out of memory\n");
@@ -540,6 +580,7 @@ int __export rad_packet_add_str(struct rad_packet_t *pack, const char *vendor_na
 	}
 	memcpy(ra->val.string, val, len);
 	ra->val.string[len] = 0;
+	ra->raw = ra->val.string;
 	list_add_tail(&ra->entry, &pack->attrs);
 	pack->len += (vendor_name ? 8 : 2) + len;
 
@@ -563,6 +604,8 @@ int __export rad_packet_change_str(struct rad_packet_t *pack, const char *vendor
 			log_emerg("radius: out of memory\n");
 			return -1;
 		}
+
+		ra->raw = ra->val.string;
 
 		pack->len += len - ra->len;
 		ra->len = len;
@@ -610,6 +653,7 @@ int __export rad_packet_add_val(struct rad_packet_t *pack, const char *vendor_na
 	ra->attr = attr;
 	ra->len = 4;
 	ra->val = v->val;
+	ra->raw = &ra->val;
 	list_add_tail(&ra->entry, &pack->attrs);
 	pack->len += (vendor_name ? 8 : 2) + 4;
 
@@ -670,6 +714,7 @@ int rad_packet_add_ifid(struct rad_packet_t *pack, const char *vendor_name, cons
 	ra->attr = attr;
 	ra->len = 8;
 	ra->val.ifid = ifid;
+	ra->raw = &ra->val;
 	list_add_tail(&ra->entry, &pack->attrs);
 	pack->len += (vendor_name ? 8 : 2) + 8;
 
@@ -708,6 +753,7 @@ int rad_packet_add_ipv6prefix(struct rad_packet_t *pack, const char *vendor_name
 	ra->len = 18;
 	ra->val.ipv6prefix.len = len;
 	ra->val.ipv6prefix.prefix = *prefix;
+	ra->raw = &ra->val;
 	list_add_tail(&ra->entry, &pack->attrs);
 	pack->len += (vendor_name ? 8 : 2) + 18;
 

@@ -84,11 +84,8 @@ static struct lcp_option_t *auth_init(struct ppp_lcp_t *lcp)
 
 	INIT_LIST_HEAD(&ad->auth_opt.auth_list);
 
-	if (conf_noauth) {
-		if (connect_ppp_channel(lcp->ppp))
-			return NULL;
+	if (conf_noauth)
 		return &ad->auth_opt.opt;
-	}
 
 	list_for_each_entry(h, &auth_handlers, entry) {
 		d = h->init(lcp->ppp);
@@ -286,6 +283,9 @@ static int auth_layer_start(struct ppp_layer_data_t *ld)
 
 	log_ppp_debug("auth_layer_start\n");
 
+	if (conf_noauth && connect_ppp_channel(ad->ppp))
+		return -1;
+
 	if (ad->auth_opt.auth) {
 		ad->auth_opt.started = 1;
 		ad->auth_opt.auth->h->start(ad->ppp, ad->auth_opt.auth);
@@ -364,8 +364,8 @@ void __export ppp_auth_failed(struct ppp_t *ppp, char *username)
 			_free(username);
 		ppp->ses.terminate_cause = TERM_AUTH_ERROR;
 		pthread_rwlock_unlock(&ses_lock);
-		log_ppp_info1("%s: authentication failed\n", username);
-		log_info1("%s: authentication failed\n", username);
+		log_ppp_info1("%s: authentication failed\n", ppp->ses.username);
+		log_info1("%s: authentication failed\n", ppp->ses.username);
 		triton_event_fire(EV_SES_AUTH_FAILED, ppp);
 	} else
 		log_ppp_info1("authentication failed\n");
@@ -399,6 +399,8 @@ static void load_config(void)
 	opt = conf_get_opt("auth", "noauth");
 	if (opt)
 		conf_noauth = atoi(opt);
+	else
+		conf_noauth = 0;
 }
 
 static void ppp_auth_init()

@@ -17,6 +17,7 @@ struct ipv6db_addr_t
 	struct list_head entry;
 	struct in6_addr addr;
 	int prefix_len;
+	int flag_onlink:1;
 	int flag_auto:1;
 	int installed:1;
 };
@@ -60,6 +61,8 @@ struct ipv6db_prefix_t *ipdb_get_ipv6_prefix(struct ap_session *ses);
 void ipdb_put_ipv6_prefix(struct ap_session *ses, struct ipv6db_prefix_t *it);
 
 void ipdb_register(struct ipdb_t *);
+
+void build_ip6_addr(struct ipv6db_addr_t *a, uint64_t intf_id, struct in6_addr *addr);
 
 #endif
 

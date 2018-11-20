@@ -94,6 +94,7 @@ static int conf_mppe = MPPE_UNSET;
 static int conf_dataseq = L2TP_DATASEQ_ALLOW;
 static int conf_reorder_timeout = 0;
 static const char *conf_ip_pool;
+static const char *conf_ifname;
 
 static unsigned int stat_conn_starting;
 static unsigned int stat_conn_active;
@@ -255,7 +256,13 @@ static inline int nsnr_cmp(uint16_t ns, uint16_t nr)
 
 static void l2tp_ctx_switch(struct triton_context_t *ctx, void *arg)
 {
-	net = &def_net;
+	struct ap_session *apses = arg;
+
+	if (apses)
+		net = apses->net;
+	else
+		net = def_net;
+
 	log_switch(ctx, arg);
 }
 
@@ -1790,6 +1797,8 @@ static int l2tp_session_start_data_channel(struct l2tp_sess_t *sess)
 			goto err;
 		}
 	}
+	if (conf_ifname)
+		sess->ppp.ses.ifname_rename = _strdup(conf_ifname);
 
 	sess->ppp.ses.ctrl = &sess->ctrl;
 	sess->apses_state = APSTATE_INIT;
@@ -3110,7 +3119,7 @@ static int rescode_get_data(const struct l2tp_attr_t *result_attr,
 		return 2;
 
 	*err_msg = _malloc(msglen + 1);
-	if (err_msg) {
+	if (*err_msg) {
 		memcpy(*err_msg, resavp->error_msg, msglen);
 		(*err_msg)[msglen] = '\0';
 	}
@@ -3206,6 +3215,9 @@ static int l2tp_recv_HELLO(struct l2tp_conn_t *conn,
 	}
 
 	log_tunnel(log_debug, conn, "handling HELLO\n");
+
+	if (conn->hello_timer.tpd)
+		triton_timer_mod(&conn->hello_timer, 0);
 
 	return 0;
 }
@@ -4919,6 +4931,7 @@ static void load_config(void)
 	}
 
 	conf_ip_pool = conf_get_opt("l2tp", "ip-pool");
+	conf_ifname = conf_get_opt("l2tp", "ifname");
 
 	switch (iprange_check_activation()) {
 	case IPRANGE_DISABLED:

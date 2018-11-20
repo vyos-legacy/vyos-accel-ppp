@@ -58,7 +58,7 @@ int ipoe_nl_add_exclude(uint32_t addr, int mask)
 	addattr32(nlh, 1024, IPOE_ATTR_ADDR, addr);
 
 	if (rtnl_talk(&rth, nlh, 0, 0, nlh, NULL, NULL, 0) < 0 ) {
-		log_ppp_error("ipoe: nl_add_net: error talking to kernel\n");
+		log_ppp_error("ipoe: nl_add_exclude: %s\n", strerror(errno));
 		ret = -1;
 	}
 
@@ -93,7 +93,7 @@ void ipoe_nl_del_exclude(uint32_t addr)
 	addattr32(nlh, 1024, IPOE_ATTR_ADDR, addr);
 
 	if (rtnl_talk(&rth, nlh, 0, 0, nlh, NULL, NULL, 0) < 0 )
-		log_ppp_error("ipoe: nl_add_net: error talking to kernel\n");
+		log_ppp_error("ipoe: nl_del_exclude: %s\n", strerror(errno));
 
 	rtnl_close(&rth);
 }
@@ -128,7 +128,7 @@ int ipoe_nl_add_net(uint32_t addr, int mask)
 	addattr32(nlh, 1024, IPOE_ATTR_MASK, mask);
 
 	if (rtnl_talk(&rth, nlh, 0, 0, nlh, NULL, NULL, 0) < 0 ) {
-		log_ppp_error("ipoe: nl_add_net: error talking to kernel\n");
+		log_ppp_error("ipoe: nl_add_net: %s\n", strerror(errno));
 		ret = -1;
 	}
 
@@ -163,7 +163,7 @@ void ipoe_nl_del_net(uint32_t addr)
 	addattr32(nlh, 1024, IPOE_ATTR_ADDR, addr);
 
 	if (rtnl_talk(&rth, nlh, 0, 0, nlh, NULL, NULL, 0) < 0 )
-		log_ppp_error("ipoe: nl_del_net: error talking to kernel\n");
+		log_ppp_error("ipoe: nl_del_net: %s\n", strerror(errno));
 
 	rtnl_close(&rth);
 }
@@ -195,7 +195,7 @@ void ipoe_nl_add_interface(int ifindex, uint8_t mode)
 	addattr_l(nlh, 1024, IPOE_ATTR_MODE, &mode, 1);
 
 	if (rtnl_talk(&rth, nlh, 0, 0, nlh, NULL, NULL, 0) < 0 )
-		log_error("ipoe: nl_add_iface: error talking to kernel\n");
+		log_error("ipoe: nl_add_iface: %s\n", strerror(errno));
 
 	rtnl_close(&rth);
 }
@@ -226,7 +226,7 @@ void ipoe_nl_del_interface(int ifindex)
 	addattr32(nlh, 1024, IPOE_ATTR_IFINDEX, ifindex);
 
 	if (rtnl_talk(&rth, nlh, 0, 0, nlh, NULL, NULL, 0) < 0 )
-		log_error("ipoe: nl_del_iface: error talking to kernel\n");
+		log_error("ipoe: nl_del_iface: %s\n", strerror(errno));
 
 	rtnl_close(&rth);
 }
@@ -236,7 +236,7 @@ void ipoe_nl_delete_interfaces(void)
 	ipoe_nl_del_interface(-1);
 }
 
-int ipoe_nl_create(int ifindex)
+int ipoe_nl_create()
 {
 	struct rtnl_handle rth;
 	struct nlmsghdr *nlh;
@@ -263,10 +263,10 @@ int ipoe_nl_create(int ifindex)
 	ghdr = NLMSG_DATA(&req.n);
 	ghdr->cmd = IPOE_CMD_CREATE;
 
-	addattr32(nlh, 1024, IPOE_ATTR_IFINDEX, ifindex);
-
-	if (rtnl_talk(&rth, nlh, 0, 0, nlh, NULL, NULL, 0) < 0 )
-		log_ppp_error("ipoe: nl_create: error talking to kernel\n");
+	if (rtnl_talk(&rth, nlh, 0, 0, nlh, NULL, NULL, 0) < 0 ) {
+		log_ppp_error("ipoe: nl_create: %s\n", strerror(errno));
+		goto out;
+	}
 
 	if (nlh->nlmsg_type != ipoe_genl_id) {
 		log_ppp_error("ipoe: not a IPoE message %d\n", nlh->nlmsg_type);
@@ -337,7 +337,7 @@ int ipoe_nl_modify(int ifindex, uint32_t peer_addr, uint32_t addr, uint32_t gw, 
 		addattr_l(nlh, 1024, IPOE_ATTR_HWADDR, hwaddr, 6);
 
 	if (rtnl_talk(&rth, nlh, 0, 0, nlh, NULL, NULL, 0) < 0 ) {
-		log_ppp_error("ipoe: nl_create: error talking to kernel\n");
+		log_ppp_error("ipoe: nl_modify: %s\n", strerror(errno));
 		ret = -1;
 	}
 
@@ -451,7 +451,7 @@ void ipoe_nl_delete(int ifindex)
 	addattr32(nlh, 128, IPOE_ATTR_IFINDEX, ifindex);
 
 	if (rtnl_talk(&rth, nlh, 0, 0, nlh, NULL, NULL, 0) < 0 )
-		log_ppp_error("ipoe: nl_delete: error talking to kernel\n");
+		log_ppp_error("ipoe: nl_delete: %s\n", strerror(errno));
 
 	rtnl_close(&rth);
 }
@@ -606,8 +606,16 @@ static void ipoe_mc_close(struct triton_context_t *ctx)
 	triton_context_unregister(ctx);
 }
 
+static void ipoe_mc_ctx_switch(struct triton_context_t *ctx, void *arg)
+{
+	net = def_net;
+	log_switch(NULL, NULL);
+}
+
+
 static struct triton_context_t mc_ctx = {
 	.close = ipoe_mc_close,
+	.before_switch = ipoe_mc_ctx_switch,
 };
 
 static struct triton_md_handler_t mc_hnd = {
@@ -616,7 +624,12 @@ static struct triton_md_handler_t mc_hnd = {
 
 static void init(void)
 {
-	int mcg_id = genl_resolve_mcg(IPOE_GENL_NAME, IPOE_GENL_MCG_PKT, &ipoe_genl_id);
+	int mcg_id;
+
+	if (system("modprobe -q ipoe"))
+		log_warn("failed to load ipoe module\n");
+
+	mcg_id = genl_resolve_mcg(IPOE_GENL_NAME, IPOE_GENL_MCG_PKT, &ipoe_genl_id);
 	if (mcg_id == -1) {
 		log_warn("ipoe: unclassified packet handling is disabled\n");
 		rth.fd = -1;
