@@ -10,7 +10,7 @@ DH_VERBOSE=1
 	dh $@
 
 override_dh_auto_configure:
-	dh_auto_configure -- -DNETSNMP=TRUE -DLUA=TRUE -DBUILD_IPOE_DRIVER=TRUE -DBUILD_VLAN_MON_DRIVER=TRUE
+	dh_auto_configure -- -DNETSNMP=TRUE -DLUA=TRUE -DBUILD_IPOE_DRIVER=TRUE -DBUILD_VLAN_MON_DRIVER=TRUE -DKDIR=${KERNELDIR}
 
 override_dh_install:
 	mkdir -p debian/tmp/lib/modules/4.19.0-amd64-vyos/extra
