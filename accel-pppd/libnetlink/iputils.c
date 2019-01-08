@@ -169,7 +169,7 @@ int __export iplink_set_mtu(int ifindex, int mtu)
 	memset(&req, 0, sizeof(req) - 1024);
 
 	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
-	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+	req.n.nlmsg_flags = NLM_F_REQUEST;
 	req.n.nlmsg_type = RTM_SETLINK;
 	req.i.ifi_family = AF_UNSPEC;
 	req.i.ifi_index = ifindex;
@@ -200,7 +200,7 @@ int __export iplink_vlan_add(const char *ifname, int ifindex, int vid)
 	memset(&req, 0, sizeof(req) - 4096);
 
 	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
-	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
+	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL;
 	req.n.nlmsg_type = RTM_NEWLINK;
 	req.i.ifi_family = AF_UNSPEC;
 
@@ -243,7 +243,7 @@ int __export iplink_vlan_del(int ifindex)
 	memset(&req, 0, sizeof(req) - 4096);
 
 	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
-	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+	req.n.nlmsg_flags = NLM_F_REQUEST;
 	req.n.nlmsg_type = RTM_DELLINK;
 	req.i.ifi_family = AF_UNSPEC;
 	req.i.ifi_index = ifindex;
@@ -477,7 +477,7 @@ int __export iproute_add(int ifindex, in_addr_t src, in_addr_t dst, in_addr_t gw
 	req.n.nlmsg_type = RTM_NEWROUTE;
 	req.i.rtm_family = AF_INET;
 	req.i.rtm_table = RT_TABLE_MAIN;
-	req.i.rtm_scope = ifindex ? RT_SCOPE_LINK : RT_SCOPE_UNIVERSE;
+	req.i.rtm_scope = gw ? RT_SCOPE_UNIVERSE : RT_SCOPE_LINK;
 	req.i.rtm_protocol = proto;
 	req.i.rtm_type = RTN_UNICAST;
 	req.i.rtm_dst_len = mask;
@@ -500,7 +500,7 @@ int __export iproute_add(int ifindex, in_addr_t src, in_addr_t dst, in_addr_t gw
 	return r;
 }
 
-int __export iproute_del(int ifindex, in_addr_t dst, int proto, int mask, uint32_t prio)
+int __export iproute_del(int ifindex, in_addr_t src, in_addr_t dst, in_addr_t gw, int proto, int mask, uint32_t prio)
 {
 	struct ipaddr_req {
 		struct nlmsghdr n;
@@ -516,21 +516,24 @@ int __export iproute_del(int ifindex, in_addr_t dst, int proto, int mask, uint32
 	memset(&req, 0, sizeof(req) - 4096);
 
 	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
-	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+	req.n.nlmsg_flags = NLM_F_REQUEST;
 	req.n.nlmsg_type = RTM_DELROUTE;
 	req.i.rtm_family = AF_INET;
 	req.i.rtm_table = RT_TABLE_MAIN;
-	req.i.rtm_scope = ifindex ? RT_SCOPE_LINK : RT_SCOPE_UNIVERSE;
+	req.i.rtm_scope = gw ? RT_SCOPE_UNIVERSE : RT_SCOPE_LINK;
 	req.i.rtm_protocol = proto;
 	req.i.rtm_type = RTN_UNICAST;
 	req.i.rtm_dst_len = mask;
 
-	addattr32(&req.n, sizeof(req), RTA_DST, dst);
-
 	if (ifindex)
 		addattr32(&req.n, sizeof(req), RTA_OIF, ifindex);
+	if (src)
+		addattr32(&req.n, sizeof(req), RTA_PREFSRC, src);
+	if (gw)
+		addattr32(&req.n, sizeof(req), RTA_GATEWAY, gw);
 	if (prio)
 		addattr32(&req.n, sizeof(req), RTA_PRIORITY, prio);
+	addattr32(&req.n, sizeof(req), RTA_DST, dst);
 
 	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
 		r = -1;
@@ -560,7 +563,7 @@ int __export ip6route_add(int ifindex, const struct in6_addr *dst, int pref_len,
 	req.n.nlmsg_type = RTM_NEWROUTE;
 	req.i.rtm_family = AF_INET6;
 	req.i.rtm_table = RT_TABLE_MAIN;
-	req.i.rtm_scope = (pref_len == 128) ? RT_SCOPE_HOST : RT_SCOPE_LINK;
+	req.i.rtm_scope = RT_SCOPE_UNIVERSE;
 	req.i.rtm_protocol = proto;
 	req.i.rtm_type = RTN_UNICAST;
 	req.i.rtm_dst_len = pref_len;
@@ -597,11 +600,11 @@ int __export ip6route_del(int ifindex, const struct in6_addr *dst, int pref_len,
 	memset(&req, 0, sizeof(req) - 4096);
 
 	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
-	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE;
+	req.n.nlmsg_flags = NLM_F_REQUEST;
 	req.n.nlmsg_type = RTM_DELROUTE;
 	req.i.rtm_family = AF_INET6;
 	req.i.rtm_table = RT_TABLE_MAIN;
-	req.i.rtm_scope = (pref_len == 128) ? RT_SCOPE_HOST : RT_SCOPE_LINK;
+	req.i.rtm_scope = RT_SCOPE_UNIVERSE;
 	req.i.rtm_protocol = proto;
 	req.i.rtm_type = RTN_UNICAST;
 	req.i.rtm_dst_len = pref_len;
@@ -705,7 +708,7 @@ int __export ip6addr_del(int ifindex, struct in6_addr *addr, int prefix_len)
 	memset(&req, 0, sizeof(req) - 4096);
 
 	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
-	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE;
+	req.n.nlmsg_flags = NLM_F_REQUEST;
 	req.n.nlmsg_type = RTM_DELADDR;
 	req.i.ifa_family = AF_INET6;
 	req.i.ifa_index = ifindex;
