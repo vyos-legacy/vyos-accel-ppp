@@ -1,8 +1,15 @@
+vyos-accel-ppp (1.11.2-6) unstable; urgency=low
+
+  * bumping kernel version to 4.19.20
+
+ -- hagbard <vyosdev@derith.de>  Sat, 09 Feb 2019 10:55:23 -0800
+
 vyos-accel-ppp (1.11.2-5) unstable; urgency=low
 
   * merged latest updates
 
  -- hagbard <vyosdev@derith.de>  Tue, 08 Jan 2019 15:18:21 -0800
+
 vyos-accel-ppp (1.11.2-4) unstable; urgency=low
 
   * merged all updates from https://git.code.sf.net/p/accel-ppp/code
