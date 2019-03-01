@@ -2,3 +2,4 @@ usr/bin
 usr/sbin
 usr/lib64
 usr/share/accel-ppp
+opt/vyatta/etc/config-migrate/current
