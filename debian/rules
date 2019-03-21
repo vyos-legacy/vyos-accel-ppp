@@ -16,9 +16,9 @@ override_dh_install:
 	## needed for config migrations
 	mkdir -p debian/tmp/opt/vyatta/etc/config-migrate/current/
 	cp cfg-version/vyos-accel-ppp\@* debian/tmp/opt/vyatta/etc/config-migrate/current/ 
-	mkdir -p debian/tmp/lib/modules/4.19.20-amd64-vyos/extra
-	cp obj-x86_64-linux-gnu/drivers/ipoe/driver/ipoe.ko debian/tmp/lib/modules/4.19.20-amd64-vyos/extra/
-	cp obj-x86_64-linux-gnu/drivers/vlan_mon/driver/vlan_mon.ko debian/tmp/lib/modules/4.19.20-amd64-vyos/extra/
+	mkdir -p debian/tmp/lib/modules/4.19.28-amd64-vyos/extra
+	cp obj-x86_64-linux-gnu/drivers/ipoe/driver/ipoe.ko debian/tmp/lib/modules/4.19.28-amd64-vyos/extra/
+	cp obj-x86_64-linux-gnu/drivers/vlan_mon/driver/vlan_mon.ko debian/tmp/lib/modules/4.19.28-amd64-vyos/extra/
 	dh_install -v
 
 override_dh_auto_clean:
