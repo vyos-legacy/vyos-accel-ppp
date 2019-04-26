@@ -272,9 +272,10 @@ static void generate_pool_p2p(struct ippool_t *p)
 		else
 			it->it.addr = addr->addr;
 
-		it->it.peer_addr = peer_addr->addr;
-
-		list_add_tail(&it->entry, &p->items);
+		if(conf_gw_ip_address != peer_addr->addr){
+			it->it.peer_addr = peer_addr->addr;
+			 list_add_tail(&it->entry, &p->items);
+		}
 	}
 }
 
