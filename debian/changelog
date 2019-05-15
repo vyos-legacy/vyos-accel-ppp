@@ -1,3 +1,9 @@
+vyos-accel-ppp (1.11.2-10) unstable; urgency=low
+
+  * updates merged from master branch
+
+ -- hagbard <vyosdev@derith.de>  Wed, 15 May 2019 14:12:18 -0700 
+
 vyos-accel-ppp (1.11.2-9) unstable; urgency=low
 
   * adding Dimitry's patch to avoid gw and client ip are the
