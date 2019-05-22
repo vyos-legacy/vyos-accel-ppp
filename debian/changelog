@@ -1,3 +1,9 @@
+vyos-accel-ppp (1.11.2-11) unstable; urgency=low
+
+  * update to kernel 4.19.40
+
+ -- hagbard <vyosdev@derith.de>  Wed, 22 May 2019 09:42:35 -0700
+
 vyos-accel-ppp (1.11.2-10) unstable; urgency=low
 
   * updates merged from master branch
