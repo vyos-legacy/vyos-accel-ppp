@@ -1,1 +1,1 @@
-lib/modules/4.19.40-amd64-vyos/extra/*.ko
+lib/modules/*-*-vyos/extra/*.ko
